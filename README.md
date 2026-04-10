@@ -102,7 +102,10 @@ MCP_SERVER_VERSION=0.1.0
 
 ### Production Vercel setup
 
-For the remote OAuth pilot on Vercel, use:
+For a simple preview deployment on Vercel with no auth, you can omit the GitHub
+OAuth settings. In that case the deployed server falls back to `MCP_AUTH_MODE=none`.
+
+For the full remote OAuth pilot on Vercel, use:
 
 ```text
 MCP_AUTH_MODE=github
@@ -120,6 +123,8 @@ Important OAuth note:
 - The MCP endpoint is `/mcp`.
 - The GitHub OAuth callback is `/auth/callback`.
 - Set your GitHub OAuth App callback URL to `https://<your-stable-production-domain>/auth/callback`.
+- The repo includes `api/index.py` and `vercel.json` so Vercel can route `/mcp`
+  and `/auth/*` into the Python function.
 
 ## Project Structure
 

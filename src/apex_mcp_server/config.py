@@ -189,7 +189,10 @@ def _resolve_auth_mode(env: os._Environ[str]) -> AuthMode:
             )
         return raw_mode  # type: ignore[return-value]
 
-    return "github" if _env_flag(env, "VERCEL") else "none"
+    if _env_flag(env, "VERCEL") and _has_github_oauth_configuration(env):
+        return "github"
+
+    return "none"
 
 
 def _resolve_storage_backend(env: os._Environ[str]) -> StorageBackend:
@@ -292,6 +295,35 @@ def _env_flag(env: os._Environ[str], name: str) -> bool:
     if raw_value is None:
         return False
     return raw_value.lower() not in {"0", "false", "no", "off"}
+
+
+def _has_github_oauth_configuration(env: os._Environ[str]) -> bool:
+    """Check whether enough GitHub OAuth configuration exists to enable auth.
+
+    Parameters:
+        env: Process environment variables.
+
+    Returns:
+        bool: `True` when the Vercel deployment includes the required GitHub
+            OAuth and Redis settings.
+
+    Raises:
+        This helper does not raise errors directly.
+
+    Example:
+        >>> _has_github_oauth_configuration(
+        ...     {"GITHUB_CLIENT_ID": "x"}  # type: ignore[arg-type]
+        ... )
+        False
+    """
+
+    required_values = (
+        _clean_optional_value(env.get("PUBLIC_BASE_URL")),
+        _clean_optional_value(env.get("GITHUB_CLIENT_ID")),
+        _clean_optional_value(env.get("GITHUB_CLIENT_SECRET")),
+        _clean_optional_value(env.get("REDIS_URL")),
+    )
+    return all(required_values)
 
 
 def _require_value(value: str | None, message: str) -> None:

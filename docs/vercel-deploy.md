@@ -1,6 +1,18 @@
 # Vercel Deployment Notes
 
-This repo deploys as a single Python ASGI app on Vercel. The MCP endpoint is `/mcp`, and the GitHub OAuth callback is `/auth/callback`.
+This repo deploys as a single Python ASGI app on Vercel. The MCP endpoint is
+`/mcp`, and the GitHub OAuth callback is `/auth/callback`.
+
+The repo includes:
+
+- `api/index.py` as the Vercel Python Function entrypoint
+- `vercel.json` rewrites for `/mcp` and `/auth/*`
+
+## Preview-only deploys
+
+If you only want a quick preview of the MCP server and do not need GitHub OAuth
+yet, you can deploy without auth configuration. In that case the server defaults
+to `MCP_AUTH_MODE=none` and will behave like local anonymous mode.
 
 ## Required Vercel resources
 
@@ -73,4 +85,3 @@ https://<your-stable-production-domain>/mcp
 - Use a stable production domain for OAuth. GitHub callback URLs must match exactly.
 - Local development defaults to `MCP_AUTH_MODE=none` and `PROFILE_STORAGE_BACKEND=file`.
 - On Vercel, the recommended production setup is `MCP_AUTH_MODE=github` and `PROFILE_STORAGE_BACKEND=blob`.
-
