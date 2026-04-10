@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.local
 .envrc
 .venv
 env/
@@ -190,6 +191,9 @@ cython_debug/
 
 # Ruff stuff:
 .ruff_cache/
+
+# Local profile data for the FastMCP pilot
+profiles/*.md
 
 # PyPI configuration file
 .pypirc
