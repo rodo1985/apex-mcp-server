@@ -44,8 +44,8 @@ def create_mcp_server(
         name=resolved_settings.app_name,
         version=resolved_settings.version,
         instructions=(
-            "A minimal FastMCP pilot that stores one markdown persona profile per "
-            "caller and exposes tools, a resource, and a prompt."
+            "A minimal FastMCP pilot that stores one protected markdown persona "
+            "profile and exposes tools, a resource, and a prompt."
         ),
         auth=build_auth_provider(resolved_settings),
     )
@@ -117,7 +117,7 @@ def create_mcp_server(
 
         Example:
             Call `whoami` after connecting a remote MCP client to confirm the
-            current GitHub identity and request wiring.
+            current bearer-token identity and request wiring.
         """
 
         identity = resolve_identity(ctx, resolved_settings.auth_mode)

@@ -21,8 +21,8 @@ class SaveResult:
         This dataclass does not raise errors directly.
 
     Example:
-        >>> SaveResult(saved=True, pathname="profiles/github-123.md", bytes=12)
-        SaveResult(saved=True, pathname='profiles/github-123.md', bytes=12)
+        >>> SaveResult(saved=True, pathname="profiles/private-profile.md", bytes=12)
+        SaveResult(saved=True, pathname='profiles/private-profile.md', bytes=12)
     """
 
     saved: bool
@@ -42,8 +42,8 @@ class SaveResult:
             This method does not raise errors directly.
 
         Example:
-            >>> SaveResult(True, "profiles/github-1.md", 20).as_dict()
-            {'saved': True, 'pathname': 'profiles/github-1.md', 'bytes': 20}
+            >>> SaveResult(True, "profiles/private-profile.md", 20).as_dict()
+            {'saved': True, 'pathname': 'profiles/private-profile.md', 'bytes': 20}
         """
 
         return {
@@ -72,12 +72,12 @@ class UserIdentity:
         This dataclass does not raise errors directly.
 
     Example:
-        >>> UserIdentity(True, "123", "octocat", "github-123", "req-1")
+        >>> UserIdentity(True, "private-profile", None, "private-profile", "req-1")
         UserIdentity(
         ...     authenticated=True,
-        ...     subject='123',
-        ...     login='octocat',
-        ...     user_key='github-123',
+        ...     subject='private-profile',
+        ...     login=None,
+        ...     user_key='private-profile',
         ...     request_id='req-1',
         ... )
     """

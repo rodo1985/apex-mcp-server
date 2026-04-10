@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-AuthMode = Literal["none", "github"]
+AuthMode = Literal["none", "bearer"]
 StorageBackend = Literal["file", "blob"]
 
 
@@ -24,7 +24,7 @@ class SettingsError(RuntimeError):
         SettingsError: Raised by configuration helpers in this module.
 
     Example:
-        >>> raise SettingsError("PUBLIC_BASE_URL is required")
+        >>> raise SettingsError("MCP_API_TOKEN is required")
     """
 
 
@@ -36,15 +36,13 @@ class Settings:
         app_name: Human-readable server name shown to MCP clients.
         version: Version string reported by the server.
         auth_mode: Authentication mode for the server.
-        public_base_url: Stable public base URL used for OAuth metadata.
-        github_client_id: GitHub OAuth app client identifier.
-        github_client_secret: GitHub OAuth app client secret.
-        redis_url: Redis URL used for OAuth proxy state on Vercel.
+        api_token: Shared bearer token used to protect the HTTP endpoint.
         profile_storage_backend: Storage backend for profile markdown files.
         profiles_dir: Local directory used by the file storage backend.
         blob_prefix: Prefix used for Vercel Blob profile objects.
-        blob_read_write_token: Optional explicit Blob token.
-        jwt_signing_key: Optional signing key for FastMCP-issued JWTs.
+        blob_read_write_token: Optional Vercel Blob token. This may come from
+            either `BLOB_READ_WRITE_TOKEN` or the platform-injected
+            `VERCEL_BLOB_READ_WRITE_TOKEN`.
 
     Returns:
         Settings: Fully normalized server configuration.
@@ -54,22 +52,18 @@ class Settings:
 
     Example:
         >>> settings = Settings.from_env()
-        >>> settings.auth_mode in {"none", "github"}
+        >>> settings.auth_mode in {"none", "bearer"}
         True
     """
 
     app_name: str
     version: str
     auth_mode: AuthMode
-    public_base_url: str | None
-    github_client_id: str | None
-    github_client_secret: str | None
-    redis_url: str | None
+    api_token: str | None
     profile_storage_backend: StorageBackend
     profiles_dir: Path
     blob_prefix: str
     blob_read_write_token: str | None
-    jwt_signing_key: str | None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -92,27 +86,18 @@ class Settings:
 
         auth_mode = _resolve_auth_mode(os.environ)
         storage_backend = _resolve_storage_backend(os.environ)
-        public_base_url = _normalize_optional_url(os.environ.get("PUBLIC_BASE_URL"))
 
         settings = cls(
             app_name=os.environ.get("MCP_SERVER_NAME", "APEX FastMCP Profile Pilot"),
             version=os.environ.get("MCP_SERVER_VERSION", "0.1.0"),
             auth_mode=auth_mode,
-            public_base_url=public_base_url,
-            github_client_id=_clean_optional_value(os.environ.get("GITHUB_CLIENT_ID")),
-            github_client_secret=_clean_optional_value(
-                os.environ.get("GITHUB_CLIENT_SECRET")
-            ),
-            redis_url=_clean_optional_value(os.environ.get("REDIS_URL")),
+            api_token=_clean_optional_value(os.environ.get("MCP_API_TOKEN")),
             profile_storage_backend=storage_backend,
             profiles_dir=Path(
                 os.environ.get("PROFILES_DIR", "profiles")
             ).resolve(),
             blob_prefix=os.environ.get("BLOB_PROFILE_PREFIX", "profiles").strip("/"),
-            blob_read_write_token=_clean_optional_value(
-                os.environ.get("BLOB_READ_WRITE_TOKEN")
-            ),
-            jwt_signing_key=_clean_optional_value(os.environ.get("JWT_SIGNING_KEY")),
+            blob_read_write_token=_resolve_blob_token(os.environ),
         )
 
         settings.validate()
@@ -134,33 +119,19 @@ class Settings:
             >>> Settings.from_env().validate()
         """
 
-        if self.auth_mode == "github":
+        if self.auth_mode == "bearer":
             _require_value(
-                self.public_base_url,
-                "PUBLIC_BASE_URL is required when MCP_AUTH_MODE=github.",
-            )
-            _require_value(
-                self.github_client_id,
-                "GITHUB_CLIENT_ID is required when MCP_AUTH_MODE=github.",
-            )
-            _require_value(
-                self.github_client_secret,
-                "GITHUB_CLIENT_SECRET is required when MCP_AUTH_MODE=github.",
-            )
-            _require_value(
-                self.redis_url,
-                "REDIS_URL is required when MCP_AUTH_MODE=github.",
+                self.api_token,
+                "MCP_API_TOKEN is required when MCP_AUTH_MODE=bearer.",
             )
 
         if self.profile_storage_backend == "blob":
-            # The Vercel Blob SDK can read the token from the environment at
-            # runtime, so we only enforce a token outside Vercel deployments.
-            running_on_vercel = _env_flag(os.environ, "VERCEL")
-            if not running_on_vercel and not self.blob_read_write_token:
-                raise SettingsError(
-                    "BLOB_READ_WRITE_TOKEN is required locally when "
-                    "PROFILE_STORAGE_BACKEND=blob."
-                )
+            _require_value(
+                self.blob_read_write_token,
+                "A Vercel Blob token is required when "
+                "PROFILE_STORAGE_BACKEND=blob. Set BLOB_READ_WRITE_TOKEN or "
+                "VERCEL_BLOB_READ_WRITE_TOKEN.",
+            )
 
 
 def _resolve_auth_mode(env: os._Environ[str]) -> AuthMode:
@@ -170,8 +141,8 @@ def _resolve_auth_mode(env: os._Environ[str]) -> AuthMode:
         env: Process environment variables.
 
     Returns:
-        AuthMode: Either `"none"` for local development or `"github"` for a
-            deployed OAuth flow.
+        AuthMode: Either `"none"` for open local development or `"bearer"` for
+            the shared-token private mode.
 
     Raises:
         SettingsError: If the supplied auth mode is not recognized.
@@ -183,14 +154,12 @@ def _resolve_auth_mode(env: os._Environ[str]) -> AuthMode:
 
     raw_mode = _clean_optional_value(env.get("MCP_AUTH_MODE"))
     if raw_mode:
-        if raw_mode not in {"none", "github"}:
-            raise SettingsError(
-                "MCP_AUTH_MODE must be either 'none' or 'github'."
-            )
+        if raw_mode not in {"none", "bearer"}:
+            raise SettingsError("MCP_AUTH_MODE must be either 'none' or 'bearer'.")
         return raw_mode  # type: ignore[return-value]
 
-    if _env_flag(env, "VERCEL") and _has_github_oauth_configuration(env):
-        return "github"
+    if _clean_optional_value(env.get("MCP_API_TOKEN")):
+        return "bearer"
 
     return "none"
 
@@ -202,8 +171,8 @@ def _resolve_storage_backend(env: os._Environ[str]) -> StorageBackend:
         env: Process environment variables.
 
     Returns:
-        StorageBackend: `"file"` for local development or `"blob"` on Vercel by
-            default.
+        StorageBackend: `"file"` for local development, or `"blob"` on Vercel
+            only when Blob has actually been configured.
 
     Raises:
         SettingsError: If the supplied backend is not recognized.
@@ -223,30 +192,62 @@ def _resolve_storage_backend(env: os._Environ[str]) -> StorageBackend:
             )
         return raw_backend  # type: ignore[return-value]
 
-    return "blob" if _env_flag(env, "VERCEL") else "file"
+    # Preview deployments should still boot even before Blob is configured, so
+    # we only auto-select Blob when a token is present. Otherwise we fall back
+    # to ephemeral file storage, which is good enough for a hello-world deploy.
+    if _env_flag(env, "VERCEL") and _has_blob_configuration(env):
+        return "blob"
+
+    return "file"
 
 
-def _normalize_optional_url(value: str | None) -> str | None:
-    """Normalize a possibly-empty URL value.
+def _resolve_blob_token(env: os._Environ[str]) -> str | None:
+    """Return the first configured Vercel Blob token from supported env vars.
 
     Parameters:
-        value: Raw environment variable content.
+        env: Process environment variables.
 
     Returns:
-        str | None: The trimmed URL without a trailing slash, or `None`.
+        str | None: A normalized Blob token, or `None` when neither the local
+            nor the Vercel-injected variable is present.
 
     Raises:
         This helper does not raise errors directly.
 
     Example:
-        >>> _normalize_optional_url("https://example.com/")
-        'https://example.com'
+        >>> _resolve_blob_token(
+        ...     {"VERCEL_BLOB_READ_WRITE_TOKEN": "demo"}  # type: ignore[arg-type]
+        ... )
+        'demo'
     """
 
-    cleaned = _clean_optional_value(value)
-    if cleaned is None:
-        return None
-    return cleaned.rstrip("/")
+    return _clean_optional_value(
+        env.get("BLOB_READ_WRITE_TOKEN")
+    ) or _clean_optional_value(
+        env.get("VERCEL_BLOB_READ_WRITE_TOKEN")
+    )
+
+
+def _has_blob_configuration(env: os._Environ[str]) -> bool:
+    """Report whether the environment contains enough Blob config to auto-use it.
+
+    Parameters:
+        env: Process environment variables.
+
+    Returns:
+        bool: `True` when a supported Blob token is present.
+
+    Raises:
+        This helper does not raise errors directly.
+
+    Example:
+        >>> _has_blob_configuration(
+        ...     {"BLOB_READ_WRITE_TOKEN": "demo"}  # type: ignore[arg-type]
+        ... )
+        True
+    """
+
+    return _resolve_blob_token(env) is not None
 
 
 def _clean_optional_value(value: str | None) -> str | None:
@@ -295,35 +296,6 @@ def _env_flag(env: os._Environ[str], name: str) -> bool:
     if raw_value is None:
         return False
     return raw_value.lower() not in {"0", "false", "no", "off"}
-
-
-def _has_github_oauth_configuration(env: os._Environ[str]) -> bool:
-    """Check whether enough GitHub OAuth configuration exists to enable auth.
-
-    Parameters:
-        env: Process environment variables.
-
-    Returns:
-        bool: `True` when the Vercel deployment includes the required GitHub
-            OAuth and Redis settings.
-
-    Raises:
-        This helper does not raise errors directly.
-
-    Example:
-        >>> _has_github_oauth_configuration(
-        ...     {"GITHUB_CLIENT_ID": "x"}  # type: ignore[arg-type]
-        ... )
-        False
-    """
-
-    required_values = (
-        _clean_optional_value(env.get("PUBLIC_BASE_URL")),
-        _clean_optional_value(env.get("GITHUB_CLIENT_ID")),
-        _clean_optional_value(env.get("GITHUB_CLIENT_SECRET")),
-        _clean_optional_value(env.get("REDIS_URL")),
-    )
-    return all(required_values)
 
 
 def _require_value(value: str | None, message: str) -> None:

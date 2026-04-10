@@ -1,19 +1,20 @@
 # apex-mcp-server
 
-This repo is a small FastMCP pilot server that stores one persona profile per caller and exposes it through MCP tools, a resource, and a prompt. It is designed to be simple enough for a first remote MCP deployment while still covering the basics of Vercel hosting, GitHub OAuth, local file storage, and Vercel Blob storage.
+This repo is a small FastMCP pilot server for a single protected persona profile. It exposes a tiny MCP surface on Vercel: two tools, one resource, one prompt, and one debugging tool.
 
-The pilot intentionally keeps the surface area tiny: get a profile, set a profile, inspect the current identity, read the saved profile as a resource, and render a prompt that injects the saved profile into a task.
+The goal is to keep the proof of concept easy to understand and easy to deploy. The server can run open for quick local experiments, or in private mode with one shared bearer token for Claude, Codex, or any MCP client that can send `Authorization: Bearer <token>`.
 
 ## Key Features / Scope
 
 - Uses FastMCP with Streamable HTTP at `/mcp`.
 - Supports `get_profile`, `set_profile`, and `whoami` MCP tools.
-- Exposes `profile://me` as a text/markdown MCP resource.
+- Exposes `profile://me` as a `text/markdown` MCP resource.
 - Exposes `use_profile(task: str)` as a simple MCP prompt.
-- Stores profiles locally as markdown files during local development.
-- Stores profiles in private Vercel Blob objects when deployed on Vercel.
-- Uses GitHub OAuth via FastMCP's OAuth proxy for the remote authentication proof of concept.
-- Does not add databases, admin dashboards, multi-document workflows, or authorization beyond "one profile per authenticated caller."
+- Supports a shared bearer token with `MCP_API_TOKEN`.
+- Supports the same bearer-token flow locally and on Vercel.
+- Stores profiles locally as markdown files by default.
+- Stores profiles in private Vercel Blob objects when Blob is configured.
+- Does not implement OAuth, Redis-backed sessions, per-user accounts, or multi-profile workflows.
 
 ## Setup
 
@@ -39,15 +40,9 @@ uv sync
 
 ## How To Run
 
-### Local development server
+### Local development without auth
 
-Local development defaults to:
-
-- `MCP_AUTH_MODE=none`
-- `PROFILE_STORAGE_BACKEND=file`
-- local profile directory: `profiles/`
-
-Start the MCP server locally:
+This is the fastest way to try the server:
 
 ```bash
 uv run uvicorn index:app --reload
@@ -57,6 +52,26 @@ The MCP endpoint will be available at:
 
 ```text
 http://127.0.0.1:8000/mcp
+```
+
+In this mode, the profile is stored in:
+
+```text
+profiles/anonymous.md
+```
+
+### Local development with bearer-token auth
+
+If you want local behavior to match the private deployed setup, start the server with a token:
+
+```bash
+MCP_API_TOKEN=dev-secret-token uv run uvicorn index:app --reload
+```
+
+Because `MCP_API_TOKEN` is present, the server automatically switches to bearer-token mode. In that mode, authenticated requests share one protected profile stored in:
+
+```text
+profiles/private-profile.md
 ```
 
 ### Tests
@@ -75,61 +90,79 @@ uv run ruff check .
 
 ### Local defaults
 
-You can run the pilot locally without any auth or cloud storage configuration. In that mode, all profile operations use a single local markdown file:
+If you do not set any auth variables:
 
-```text
-profiles/anonymous.md
-```
+- `MCP_AUTH_MODE=none`
+- `PROFILE_STORAGE_BACKEND=file`
+- local profile path: `profiles/anonymous.md`
+
+If you set `MCP_API_TOKEN`, the server automatically switches to:
+
+- `MCP_AUTH_MODE=bearer`
+- local protected profile path: `profiles/private-profile.md`
 
 ### Environment variables
 
-Optional local overrides:
+Optional overrides:
 
 ```text
-MCP_AUTH_MODE=none|github
+MCP_AUTH_MODE=none|bearer
+MCP_API_TOKEN=your-shared-token
 PROFILE_STORAGE_BACKEND=file|blob
 PROFILES_DIR=profiles
 BLOB_PROFILE_PREFIX=profiles
-PUBLIC_BASE_URL=https://your-stable-domain.example
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-REDIS_URL=redis://...
 BLOB_READ_WRITE_TOKEN=...
-JWT_SIGNING_KEY=...
+VERCEL_BLOB_READ_WRITE_TOKEN=...
 MCP_SERVER_NAME=APEX FastMCP Profile Pilot
 MCP_SERVER_VERSION=0.1.0
 ```
 
-### Production Vercel setup
+### Vercel production setup
 
-For a simple preview deployment on Vercel with no auth, you can omit the GitHub
-OAuth settings. In that case the deployed server falls back to `MCP_AUTH_MODE=none`.
-
-For the full remote OAuth pilot on Vercel, use:
+For a private deployed server, set at least:
 
 ```text
-MCP_AUTH_MODE=github
-PROFILE_STORAGE_BACKEND=blob
-PUBLIC_BASE_URL=https://<your-stable-production-domain>
-GITHUB_CLIENT_ID=<github-oauth-client-id>
-GITHUB_CLIENT_SECRET=<github-oauth-client-secret>
-REDIS_URL=<your-redis-url>
+MCP_API_TOKEN=<your-shared-token>
 ```
 
-If the Blob store is attached to the same Vercel project, `BLOB_READ_WRITE_TOKEN` is usually injected automatically.
+Optional durable storage:
 
-Important OAuth note:
+```text
+PROFILE_STORAGE_BACKEND=blob
+```
 
-- The MCP endpoint is `/mcp`.
-- The GitHub OAuth callback is `/auth/callback`.
-- Set your GitHub OAuth App callback URL to `https://<your-stable-production-domain>/auth/callback`.
-- The repo includes `api/index.py` and `vercel.json` so Vercel can route `/mcp`
-  and `/auth/*` into the Python function.
+If the Blob store is attached to the same Vercel project, Vercel usually injects:
+
+```text
+VERCEL_BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
+```
+
+Without Blob, the deployed server falls back to ephemeral file storage inside the serverless runtime. That is fine for a very small demo, but it is not durable across cold starts or redeployments.
+
+### Client connection notes
+
+Any MCP client that can send a bearer token can use this server.
+
+Codex example:
+
+```toml
+[mcp_servers.apex_profile]
+url = "https://your-server.vercel.app/mcp"
+bearer_token_env_var = "MCP_API_TOKEN"
+```
+
+Generic HTTP requirement:
+
+```text
+Authorization: Bearer <your-shared-token>
+```
 
 ## Project Structure
 
 ```text
 .
+├── api/
+│   └── index.py
 ├── docs/
 │   └── vercel-deploy.md
 ├── profiles/
@@ -144,17 +177,21 @@ Important OAuth note:
 │       ├── server.py
 │       └── storage.py
 ├── tests/
+│   ├── test_auth.py
+│   ├── test_config.py
 │   ├── test_identity.py
 │   ├── test_server.py
 │   └── test_storage.py
 ├── index.py
-└── pyproject.toml
+├── pyproject.toml
+├── uv.lock
+└── vercel.json
 ```
 
 ## Contributing / Development Notes
 
-- Keep the pilot simple. This repo is meant to be a "hello world" for remote MCP, not a production profile system.
+- Keep the pilot simple. This repo is meant to be a private MCP hello-world, not a full product.
 - Add docstrings to every new function, method, and class.
 - Prefer straightforward control flow over abstraction-heavy patterns.
 - If you change behavior, update tests and the README in the same change.
-- If you change deployment or auth behavior, also update `docs/vercel-deploy.md`.
+- If you change deployment behavior, also update `docs/vercel-deploy.md`.

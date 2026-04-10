@@ -1,87 +1,103 @@
 # Vercel Deployment Notes
 
-This repo deploys as a single Python ASGI app on Vercel. The MCP endpoint is
-`/mcp`, and the GitHub OAuth callback is `/auth/callback`.
+This repo deploys as a single Python ASGI app on Vercel. The MCP endpoint is:
+
+```text
+/mcp
+```
 
 The repo includes:
 
 - `api/index.py` as the Vercel Python Function entrypoint
-- `vercel.json` rewrites for `/mcp` and `/auth/*`
+- `vercel.json` rewrite for `/mcp`
 
-## Preview-only deploys
+## Smallest private deployment
 
-If you only want a quick preview of the MCP server and do not need GitHub OAuth
-yet, you can deploy without auth configuration. In that case the server defaults
-to `MCP_AUTH_MODE=none` and will behave like local anonymous mode.
-
-## Required Vercel resources
-
-1. Create a Vercel Blob store in the same Vercel project.
-2. Create a Redis database and copy its `REDIS_URL`.
-3. Create a GitHub OAuth App.
-4. Set the GitHub OAuth callback URL to:
+The smallest useful private setup on Vercel is:
 
 ```text
-https://<your-stable-production-domain>/auth/callback
+MCP_API_TOKEN=<your-shared-token>
 ```
 
-## Required environment variables
+That enables bearer-token auth without OAuth, Redis, or any extra auth provider.
 
-Set these in the Vercel project:
+## Optional durable storage
+
+If you want profile changes to persist across redeployments and cold starts, add a Vercel Blob store to the same project and set:
 
 ```text
-MCP_AUTH_MODE=github
 PROFILE_STORAGE_BACKEND=blob
-PUBLIC_BASE_URL=https://<your-stable-production-domain>
-GITHUB_CLIENT_ID=<github-oauth-client-id>
-GITHUB_CLIENT_SECRET=<github-oauth-client-secret>
-REDIS_URL=<your-redis-url>
 ```
 
 Vercel Blob usually injects this automatically when the store belongs to the same project:
 
 ```text
-BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
+VERCEL_BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
+```
+
+You can also provide `BLOB_READ_WRITE_TOKEN` manually if you prefer.
+
+If Blob is not configured, the server still works, but it uses ephemeral file storage inside the serverless runtime.
+
+## Recommended environment variables
+
+Production:
+
+```text
+MCP_API_TOKEN=<your-shared-token>
+PROFILE_STORAGE_BACKEND=file|blob
 ```
 
 Optional:
 
 ```text
-JWT_SIGNING_KEY=<custom-fastmcp-jwt-signing-key>
 BLOB_PROFILE_PREFIX=profiles
 MCP_SERVER_NAME=APEX FastMCP Profile Pilot
 MCP_SERVER_VERSION=0.1.0
 ```
 
+## Where to store secrets
+
+For deployed environments, put secrets in the Vercel project settings:
+
+- Vercel Dashboard → Project → Settings → Environment Variables
+
+For local development, keep secrets local only. Two simple options are:
+
+1. Export them in your shell before running `uvicorn`
+2. Use `vercel env pull` to copy Vercel env vars into a local env file that stays out of git
+
+Do not commit bearer tokens into the repo.
+
 ## Deployment flow
 
-1. Pull the latest project env locally if needed:
+1. Link the repo to the Vercel project if needed.
 
-```bash
-vercel env pull
-```
+2. Set the required environment variables in Vercel.
 
-2. Deploy:
+3. Deploy:
 
 ```bash
 vercel
 ```
 
-3. Verify the MCP endpoint is live:
+4. Verify the MCP endpoint is live:
 
 ```text
 https://<your-stable-production-domain>/mcp
 ```
 
-4. Connect the remote MCP server from your client and test:
-   - `whoami`
-   - `set_profile`
-   - `get_profile`
-   - `profile://me`
-   - `use_profile`
+5. Connect your MCP client with the same bearer token and test:
+
+- `whoami`
+- `set_profile`
+- `get_profile`
+- `profile://me`
+- `use_profile`
 
 ## Notes
 
-- Use a stable production domain for OAuth. GitHub callback URLs must match exactly.
-- Local development defaults to `MCP_AUTH_MODE=none` and `PROFILE_STORAGE_BACKEND=file`.
-- On Vercel, the recommended production setup is `MCP_AUTH_MODE=github` and `PROFILE_STORAGE_BACKEND=blob`.
+- The same bearer token flow works locally and on Vercel.
+- Without Blob, Vercel storage is not durable.
+- This private bearer-token setup is a good fit for Claude and Codex style private MCP usage.
+- If you later need ChatGPT-style published OAuth flows, add a real OAuth provider as a separate follow-up step instead of complicating this pilot now.

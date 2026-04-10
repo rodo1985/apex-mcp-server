@@ -31,8 +31,8 @@ def resolve_identity(
         UserIdentity: A normalized identity object with a stable `user_key`.
 
     Raises:
-        RuntimeError: If authenticated mode is enabled but no valid subject claim
-            is available.
+        RuntimeError: If authenticated mode is enabled but no valid subject can
+            be derived from the current token.
 
     Example:
         >>> from types import SimpleNamespace
@@ -44,8 +44,8 @@ def resolve_identity(
     active_token = token if token is not None else get_access_token()
     if active_token is None:
         if auth_mode == "none":
-            # The pilot is intentionally usable locally without an auth stack,
-            # so all local requests share one anonymous markdown document.
+            # Local development remains intentionally frictionless, so anonymous
+            # mode shares one markdown profile document across local requests.
             return UserIdentity(
                 authenticated=False,
                 subject=None,
@@ -59,19 +59,22 @@ def resolve_identity(
             "request."
         )
 
-    claims = _merge_claims(active_token)
-    subject = _first_string(claims, "sub", "user_id", "id")
+    claims = dict(active_token.claims or {})
+    subject = _first_string(claims, "sub", "username", "preferred_username")
+    if subject is None:
+        subject = active_token.client_id.strip() or None
+
     if subject is None:
         raise RuntimeError(
-            "The authenticated token did not include a stable subject claim."
+            "The authenticated token did not include a stable subject or client ID."
         )
 
-    login = _first_string(claims, "login", "preferred_username", "username")
+    login = _first_string(claims, "login", "username", "preferred_username")
     return UserIdentity(
         authenticated=True,
         subject=subject,
         login=login,
-        user_key=f"github-{sanitize_identity_key(subject)}",
+        user_key=sanitize_identity_key(subject),
         request_id=ctx.request_id,
     )
 
@@ -89,49 +92,14 @@ def sanitize_identity_key(value: str) -> str:
         RuntimeError: If sanitization would result in an empty identifier.
 
     Example:
-        >>> sanitize_identity_key("user:123")
-        'user-123'
+        >>> sanitize_identity_key("private:profile")
+        'private-profile'
     """
 
     cleaned = _SAFE_KEY_PATTERN.sub("-", value).strip("-")
     if not cleaned:
         raise RuntimeError("Could not derive a safe storage key from the subject.")
     return cleaned
-
-
-def _merge_claims(token: AccessToken) -> dict[str, Any]:
-    """Combine direct and upstream OAuth claims into one lookup dictionary.
-
-    Parameters:
-        token: FastMCP access token produced by the auth provider.
-
-    Returns:
-        dict[str, Any]: A merged claim dictionary with top-level claims taking
-            precedence over nested upstream claims.
-
-    Raises:
-        This helper does not raise errors directly.
-
-    Example:
-        >>> token = AccessToken(
-        ...     token="t",
-        ...     client_id="c",
-        ...     scopes=[],
-        ...     claims={"sub": "1"},
-        ... )
-        >>> _merge_claims(token)
-        {'sub': '1'}
-    """
-
-    claims = dict(token.claims or {})
-    upstream_claims = claims.get("upstream_claims")
-
-    if isinstance(upstream_claims, dict):
-        merged_claims = dict(upstream_claims)
-        merged_claims.update(claims)
-        return merged_claims
-
-    return claims
 
 
 def _first_string(claims: dict[str, Any], *names: str) -> str | None:
@@ -156,7 +124,9 @@ def _first_string(claims: dict[str, Any], *names: str) -> str | None:
         value = claims.get(name)
         if value is None:
             continue
+
         text = str(value).strip()
         if text:
             return text
+
     return None

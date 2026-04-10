@@ -53,15 +53,15 @@ async def test_blob_profile_store_round_trip() -> None:
     client = StubBlobClient()
     store = BlobProfileStore(prefix="profiles", client=client)
 
-    missing_profile = await store.read("github-1")
-    save_result = await store.write("github-1", "# Persona\nBlob")
-    loaded_profile = await store.read("github-1")
+    missing_profile = await store.read("private-profile")
+    save_result = await store.write("private-profile", "# Persona\nBlob")
+    loaded_profile = await store.read("private-profile")
 
     assert missing_profile == ""
-    assert save_result.pathname == "profiles/github-1.md"
+    assert save_result.pathname == "profiles/private-profile.md"
     assert save_result.saved is True
     assert loaded_profile == "# Persona\nBlob"
-    assert client.saved_payloads["profiles/github-1.md"] == b"# Persona\nBlob"
+    assert client.saved_payloads["profiles/private-profile.md"] == b"# Persona\nBlob"
 
 
 @dataclass

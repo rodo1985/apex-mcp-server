@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 from fastmcp.server.auth import AccessToken
 
 from apex_mcp_server.identity import resolve_identity, sanitize_identity_key
@@ -35,8 +34,8 @@ def test_resolve_identity_in_no_auth_mode_uses_anonymous_profile() -> None:
     assert identity.request_id == "req-local"
 
 
-def test_resolve_identity_from_access_token_claims() -> None:
-    """Ensure authenticated requests derive a stable GitHub-based storage key.
+def test_resolve_identity_from_bearer_token_claims() -> None:
+    """Ensure authenticated requests derive a stable file-safe storage key.
 
     Parameters:
         None.
@@ -45,30 +44,30 @@ def test_resolve_identity_from_access_token_claims() -> None:
         None.
 
     Raises:
-        AssertionError: If the subject or login extraction changes unexpectedly.
+        AssertionError: If the subject extraction changes unexpectedly.
     """
 
     token = AccessToken(
         token="demo-token",
-        client_id="client-1",
-        scopes=["user"],
-        claims={"sub": "12345", "login": "octocat"},
+        client_id="static-bearer",
+        scopes=[],
+        claims={"sub": "private-profile"},
     )
 
     identity = resolve_identity(
         ctx=SimpleNamespace(request_id="req-auth"),
-        auth_mode="github",
+        auth_mode="bearer",
         token=token,
     )
 
     assert identity.authenticated is True
-    assert identity.subject == "12345"
-    assert identity.login == "octocat"
-    assert identity.user_key == "github-12345"
+    assert identity.subject == "private-profile"
+    assert identity.login is None
+    assert identity.user_key == "private-profile"
 
 
-def test_resolve_identity_uses_upstream_claims_when_present() -> None:
-    """Ensure OAuth proxy tokens still resolve identity from nested claims.
+def test_resolve_identity_falls_back_to_client_id_when_subject_is_missing() -> None:
+    """Ensure simple bearer tokens still resolve identity without extra claims.
 
     Parameters:
         None.
@@ -77,31 +76,28 @@ def test_resolve_identity_uses_upstream_claims_when_present() -> None:
         None.
 
     Raises:
-        AssertionError: If nested upstream claims are ignored.
+        AssertionError: If the client ID fallback stops working.
     """
 
     token = AccessToken(
         token="demo-token",
-        client_id="client-1",
-        scopes=["user"],
-        claims={
-            "upstream_claims": {"sub": "999", "login": "pilot-user"},
-        },
+        client_id="static-bearer",
+        scopes=[],
+        claims={},
     )
 
     identity = resolve_identity(
-        ctx=SimpleNamespace(request_id="req-upstream"),
-        auth_mode="github",
+        ctx=SimpleNamespace(request_id="req-client-id"),
+        auth_mode="bearer",
         token=token,
     )
 
-    assert identity.subject == "999"
-    assert identity.login == "pilot-user"
-    assert identity.user_key == "github-999"
+    assert identity.subject == "static-bearer"
+    assert identity.user_key == "static-bearer"
 
 
 def test_sanitize_identity_key_replaces_unsafe_characters() -> None:
-    """Ensure generated storage keys remain safe for files and blob paths.
+    """Ensure generated storage keys remain safe for file and blob paths.
 
     Parameters:
         None.
@@ -113,33 +109,4 @@ def test_sanitize_identity_key_replaces_unsafe_characters() -> None:
         AssertionError: If unsafe characters are not normalized.
     """
 
-    assert sanitize_identity_key("github:user/123") == "github-user-123"
-
-
-def test_resolve_identity_requires_subject_in_authenticated_mode() -> None:
-    """Ensure authenticated mode rejects tokens without a stable subject.
-
-    Parameters:
-        None.
-
-    Returns:
-        None.
-
-    Raises:
-        AssertionError: If the missing-subject case does not raise.
-    """
-
-    token = AccessToken(
-        token="demo-token",
-        client_id="client-1",
-        scopes=["user"],
-        claims={},
-    )
-
-    with pytest.raises(RuntimeError, match="stable subject"):
-        resolve_identity(
-            ctx=SimpleNamespace(request_id="req-error"),
-            auth_mode="github",
-            token=token,
-        )
-
+    assert sanitize_identity_key("private:profile/123") == "private-profile-123"
