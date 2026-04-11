@@ -171,6 +171,8 @@ VERCEL_BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
 
 Without Blob, the deployed server falls back to ephemeral file storage inside the serverless runtime. That is fine for a very small demo, but it is not durable across cold starts or redeployments.
 
+For the full manual Vercel deployment and remote testing guide, see [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
+
 ### Client connection notes
 
 Any MCP client that can send a bearer token can use this server.
@@ -187,6 +189,23 @@ Generic HTTP requirement:
 
 ```text
 Authorization: Bearer <your-shared-token>
+```
+
+### MCP Inspector setup
+
+If you connect with MCP Inspector, use a custom header instead of the OAuth form.
+
+1. Set the MCP server URL to your `/mcp` endpoint.
+2. Open `Authentication`.
+3. Under `Custom Headers`, add:
+   - Header Name: `Authorization`
+   - Header Value: `Bearer <your-shared-token>`
+4. Leave the `OAuth 2.0 Flow` fields empty.
+
+Example for a local token such as `AAA`:
+
+```text
+Authorization: Bearer AAA
 ```
 
 ## Project Structure
@@ -227,3 +246,4 @@ Authorization: Bearer <your-shared-token>
 - Prefer straightforward control flow over abstraction-heavy patterns.
 - If you change behavior, update tests and the README in the same change.
 - If you change deployment behavior, also update `docs/vercel-deploy.md`.
+- OAuth planning for future `claude.ai` support lives in [docs/claude-oauth-plan.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/claude-oauth-plan.md).
