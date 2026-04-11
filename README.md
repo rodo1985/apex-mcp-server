@@ -38,6 +38,14 @@ uv venv
 uv sync
 ```
 
+### 4. Optional: use the Makefile helpers
+
+If you prefer short local commands, this repo also includes a small `Makefile`:
+
+```bash
+make help
+```
+
 ## How To Run
 
 ### Local development without auth
@@ -46,6 +54,12 @@ This is the fastest way to try the server:
 
 ```bash
 uv run uvicorn index:app --reload
+```
+
+Or with the Makefile:
+
+```bash
+make run
 ```
 
 The MCP endpoint will be available at:
@@ -68,6 +82,12 @@ If you want local behavior to match the private deployed setup, start the server
 MCP_API_TOKEN=dev-secret-token uv run uvicorn index:app --reload
 ```
 
+Or with the Makefile:
+
+```bash
+make run-private MCP_API_TOKEN=dev-secret-token
+```
+
 Because `MCP_API_TOKEN` is present, the server automatically switches to bearer-token mode. In that mode, authenticated requests share one protected profile stored in:
 
 ```text
@@ -80,10 +100,22 @@ profiles/private-profile.md
 uv run pytest
 ```
 
+Or:
+
+```bash
+make test
+```
+
 ### Lint
 
 ```bash
 uv run ruff check .
+```
+
+Or:
+
+```bash
+make lint
 ```
 
 ## Configuration
