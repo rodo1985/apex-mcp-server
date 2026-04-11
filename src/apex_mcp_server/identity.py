@@ -69,6 +69,8 @@ def resolve_identity(
             "The authenticated token did not include a stable subject or client ID."
         )
 
+    # OAuth providers often expose a friendly login through preferred_username,
+    # while bearer mode usually only includes the fixed subject claim.
     login = _first_string(claims, "login", "username", "preferred_username")
     return UserIdentity(
         authenticated=True,

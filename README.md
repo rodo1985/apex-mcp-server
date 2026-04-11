@@ -11,10 +11,11 @@ The goal is to keep the proof of concept easy to understand and easy to deploy. 
 - Exposes `profile://me` as a `text/markdown` MCP resource.
 - Exposes `use_profile(task: str)` as a simple MCP prompt.
 - Supports a shared bearer token with `MCP_API_TOKEN`.
-- Supports the same bearer-token flow locally and on Vercel.
+- Supports WorkOS AuthKit OAuth for `claude.ai` production connections.
+- Supports local bearer-token mode and production OAuth mode side-by-side.
 - Stores profiles locally as markdown files by default.
 - Stores profiles in private Vercel Blob objects when Blob is configured.
-- Does not implement OAuth, Redis-backed sessions, per-user accounts, or multi-profile workflows.
+- Does not implement Redis-backed sessions, multi-profile workflows, or local OAuth login flows.
 
 ## Setup
 
@@ -138,8 +139,10 @@ If you set `MCP_API_TOKEN`, the server automatically switches to:
 Optional overrides:
 
 ```text
-MCP_AUTH_MODE=none|bearer
+MCP_AUTH_MODE=none|bearer|oauth
 MCP_API_TOKEN=your-shared-token
+MCP_PUBLIC_BASE_URL=https://your-public-domain
+WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
 PROFILE_STORAGE_BACKEND=file|blob
 PROFILES_DIR=profiles
 BLOB_PROFILE_PREFIX=profiles
@@ -151,10 +154,12 @@ MCP_SERVER_VERSION=0.1.0
 
 ### Vercel production setup
 
-For a private deployed server, set at least:
+For a Claude-facing OAuth deployment, set at least:
 
 ```text
-MCP_API_TOKEN=<your-shared-token>
+MCP_AUTH_MODE=oauth
+MCP_PUBLIC_BASE_URL=https://your-public-domain
+WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
 ```
 
 Optional durable storage:
@@ -175,7 +180,7 @@ For the full manual Vercel deployment and remote testing guide, see [docs/vercel
 
 ### Client connection notes
 
-Any MCP client that can send a bearer token can use this server.
+For local development, any MCP client that can send a bearer token can use this server.
 
 Codex example:
 
@@ -190,6 +195,8 @@ Generic HTTP requirement:
 ```text
 Authorization: Bearer <your-shared-token>
 ```
+
+For `claude.ai` production use, prefer the OAuth setup documented in [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md) instead of bearer-token auth.
 
 ### MCP Inspector setup
 

@@ -110,3 +110,85 @@ def test_sanitize_identity_key_replaces_unsafe_characters() -> None:
     """
 
     assert sanitize_identity_key("private:profile/123") == "private-profile-123"
+
+
+def test_resolve_identity_uses_oauth_subject_and_preferred_username() -> None:
+    """Ensure OAuth claims map to stable subject and friendly login fields.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If OAuth claims are not resolved as expected.
+    """
+
+    token = AccessToken(
+        token="oauth-token",
+        client_id="oauth-client",
+        scopes=[],
+        claims={"sub": "oauth-user-123", "preferred_username": "sergio"},
+    )
+
+    identity = resolve_identity(
+        ctx=SimpleNamespace(request_id="req-oauth"),
+        auth_mode="oauth",
+        token=token,
+    )
+
+    assert identity.subject == "oauth-user-123"
+    assert identity.login == "sergio"
+    assert identity.user_key == "oauth-user-123"
+
+
+def test_resolve_identity_in_oauth_mode_falls_back_to_client_id() -> None:
+    """Ensure sparse OAuth tokens still resolve to a stable storage key.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If client ID fallback stops working in OAuth mode.
+    """
+
+    token = AccessToken(
+        token="oauth-token",
+        client_id="oauth-client-id",
+        scopes=[],
+        claims={},
+    )
+
+    identity = resolve_identity(
+        ctx=SimpleNamespace(request_id="req-oauth-client"),
+        auth_mode="oauth",
+        token=token,
+    )
+
+    assert identity.subject == "oauth-client-id"
+    assert identity.user_key == "oauth-client-id"
+
+
+def test_sanitize_identity_key_raises_for_empty_result() -> None:
+    """Ensure fully unsafe subjects still fail instead of producing bad keys.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        RuntimeError: Expected when sanitization removes all characters.
+    """
+
+    try:
+        sanitize_identity_key(":::")
+    except RuntimeError as exc:
+        assert str(exc) == "Could not derive a safe storage key from the subject."
+    else:
+        raise AssertionError("Expected sanitize_identity_key to reject empty keys.")

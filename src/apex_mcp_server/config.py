@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-AuthMode = Literal["none", "bearer"]
+AuthMode = Literal["none", "bearer", "oauth"]
 StorageBackend = Literal["file", "blob"]
 
 
@@ -37,6 +37,8 @@ class Settings:
         version: Version string reported by the server.
         auth_mode: Authentication mode for the server.
         api_token: Shared bearer token used to protect the HTTP endpoint.
+        public_base_url: Public HTTPS base URL for the deployed MCP server.
+        workos_authkit_domain: WorkOS AuthKit domain used for OAuth mode.
         profile_storage_backend: Storage backend for profile markdown files.
         profiles_dir: Local directory used by the file storage backend.
         blob_prefix: Prefix used for Vercel Blob profile objects.
@@ -52,7 +54,7 @@ class Settings:
 
     Example:
         >>> settings = Settings.from_env()
-        >>> settings.auth_mode in {"none", "bearer"}
+        >>> settings.auth_mode in {"none", "bearer", "oauth"}
         True
     """
 
@@ -60,6 +62,8 @@ class Settings:
     version: str
     auth_mode: AuthMode
     api_token: str | None
+    public_base_url: str | None
+    workos_authkit_domain: str | None
     profile_storage_backend: StorageBackend
     profiles_dir: Path
     blob_prefix: str
@@ -92,6 +96,12 @@ class Settings:
             version=os.environ.get("MCP_SERVER_VERSION", "0.1.0"),
             auth_mode=auth_mode,
             api_token=_clean_optional_value(os.environ.get("MCP_API_TOKEN")),
+            public_base_url=_clean_optional_value(
+                os.environ.get("MCP_PUBLIC_BASE_URL")
+            ),
+            workos_authkit_domain=_clean_optional_value(
+                os.environ.get("WORKOS_AUTHKIT_DOMAIN")
+            ),
             profile_storage_backend=storage_backend,
             profiles_dir=Path(
                 os.environ.get("PROFILES_DIR", "profiles")
@@ -125,6 +135,16 @@ class Settings:
                 "MCP_API_TOKEN is required when MCP_AUTH_MODE=bearer.",
             )
 
+        if self.auth_mode == "oauth":
+            _require_value(
+                self.public_base_url,
+                "MCP_PUBLIC_BASE_URL is required when MCP_AUTH_MODE=oauth.",
+            )
+            _require_value(
+                self.workos_authkit_domain,
+                "WORKOS_AUTHKIT_DOMAIN is required when MCP_AUTH_MODE=oauth.",
+            )
+
         if self.profile_storage_backend == "blob":
             _require_value(
                 self.blob_read_write_token,
@@ -141,8 +161,9 @@ def _resolve_auth_mode(env: os._Environ[str]) -> AuthMode:
         env: Process environment variables.
 
     Returns:
-        AuthMode: Either `"none"` for open local development or `"bearer"` for
-            the shared-token private mode.
+        AuthMode: Either `"none"` for open local development, `"bearer"` for
+            the shared-token private mode, or `"oauth"` for the hosted
+            Claude.ai-compatible deployment mode.
 
     Raises:
         SettingsError: If the supplied auth mode is not recognized.
@@ -154,8 +175,10 @@ def _resolve_auth_mode(env: os._Environ[str]) -> AuthMode:
 
     raw_mode = _clean_optional_value(env.get("MCP_AUTH_MODE"))
     if raw_mode:
-        if raw_mode not in {"none", "bearer"}:
-            raise SettingsError("MCP_AUTH_MODE must be either 'none' or 'bearer'.")
+        if raw_mode not in {"none", "bearer", "oauth"}:
+            raise SettingsError(
+                "MCP_AUTH_MODE must be one of 'none', 'bearer', or 'oauth'."
+            )
         return raw_mode  # type: ignore[return-value]
 
     if _clean_optional_value(env.get("MCP_API_TOKEN")):

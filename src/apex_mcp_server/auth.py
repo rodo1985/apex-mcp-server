@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 
 from fastmcp.server.auth import AccessToken, AuthProvider, TokenVerifier
+from fastmcp.server.auth.providers.workos import AuthKitProvider
 
 from apex_mcp_server.config import Settings
 
@@ -95,8 +96,8 @@ def build_auth_provider(settings: Settings) -> AuthProvider | None:
         settings: Normalized runtime settings.
 
     Returns:
-        AuthProvider | None: A shared bearer-token verifier, or `None` when
-            authentication is disabled.
+        AuthProvider | None: A shared bearer-token verifier, an AuthKit-backed
+            OAuth provider, or `None` when authentication is disabled.
 
     Raises:
         ValueError: Propagated if FastMCP rejects the supplied auth settings.
@@ -110,4 +111,45 @@ def build_auth_provider(settings: Settings) -> AuthProvider | None:
     if settings.auth_mode == "none":
         return None
 
-    return StaticBearerTokenVerifier(api_token=settings.api_token or "")
+    if settings.auth_mode == "bearer":
+        return StaticBearerTokenVerifier(api_token=settings.api_token or "")
+
+    return build_workos_auth_provider(settings)
+
+
+def build_workos_auth_provider(settings: Settings) -> AuthProvider:
+    """Create the WorkOS AuthKit provider for Claude-compatible OAuth.
+
+    Parameters:
+        settings: Normalized runtime settings with OAuth configuration.
+
+    Returns:
+        AuthProvider: The FastMCP AuthKit provider for remote OAuth.
+
+    Raises:
+        ValueError: Propagated if FastMCP rejects provider construction.
+
+    Example:
+        >>> settings = Settings(
+        ...     app_name="demo",
+        ...     version="0.1.0",
+        ...     auth_mode="oauth",
+        ...     api_token=None,
+        ...     public_base_url="https://example.com",
+        ...     workos_authkit_domain="https://example.authkit.app",
+        ...     profile_storage_backend="file",
+        ...     profiles_dir=__import__("pathlib").Path("."),
+        ...     blob_prefix="profiles",
+        ...     blob_read_write_token=None,
+        ... )
+        >>> provider = build_workos_auth_provider(settings)
+        >>> provider is not None
+        True
+    """
+
+    # AuthKit supports the remote MCP OAuth shape Claude expects, so we keep
+    # the integration tiny and avoid proxy storage infrastructure.
+    return AuthKitProvider(
+        authkit_domain=settings.workos_authkit_domain or "",
+        base_url=settings.public_base_url or "",
+    )

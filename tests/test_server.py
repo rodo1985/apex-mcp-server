@@ -35,6 +35,8 @@ def no_auth_settings(tmp_path: Path) -> Settings:
         version="0.1.0",
         auth_mode="none",
         api_token=None,
+        public_base_url=None,
+        workos_authkit_domain=None,
         profile_storage_backend="file",
         profiles_dir=tmp_path / "profiles",
         blob_prefix="profiles",
@@ -61,6 +63,36 @@ def bearer_settings(tmp_path: Path) -> Settings:
         version="0.1.0",
         auth_mode="bearer",
         api_token="top-secret-token",
+        public_base_url=None,
+        workos_authkit_domain=None,
+        profile_storage_backend="file",
+        profiles_dir=tmp_path / "profiles",
+        blob_prefix="profiles",
+        blob_read_write_token=None,
+    )
+
+
+@pytest.fixture
+def oauth_settings(tmp_path: Path) -> Settings:
+    """Return test settings that enable the OAuth production mode.
+
+    Parameters:
+        tmp_path: Pytest temporary directory fixture.
+
+    Returns:
+        Settings: File-backed OAuth settings for construction tests.
+
+    Raises:
+        This fixture does not raise errors directly.
+    """
+
+    return Settings(
+        app_name="APEX FastMCP Profile Pilot",
+        version="0.1.0",
+        auth_mode="oauth",
+        api_token=None,
+        public_base_url="https://example.com",
+        workos_authkit_domain="https://demo.authkit.app",
         profile_storage_backend="file",
         profiles_dir=tmp_path / "profiles",
         blob_prefix="profiles",
@@ -125,6 +157,44 @@ def initialize_payload() -> dict[str, object]:
             "clientInfo": {"name": "pytest-client", "version": "0.1.0"},
         },
     }
+
+
+def test_server_can_be_constructed_in_oauth_mode(
+    monkeypatch,
+    oauth_settings: Settings,
+) -> None:
+    """Ensure server assembly works when OAuth mode is selected.
+
+    Parameters:
+        monkeypatch: Pytest fixture for patching auth provider creation.
+        oauth_settings: OAuth settings fixture for server construction.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If the server cannot be built with OAuth settings.
+    """
+
+    sentinel = object()
+
+    def fake_build_auth_provider(settings: Settings) -> object:
+        """Return a sentinel provider so server construction stays offline."""
+
+        assert settings is oauth_settings
+        return sentinel
+
+    monkeypatch.setattr(
+        "apex_mcp_server.server.build_auth_provider",
+        fake_build_auth_provider,
+    )
+
+    server = create_mcp_server(
+        settings=oauth_settings,
+        store=FileProfileStore(oauth_settings.profiles_dir),
+    )
+
+    assert server.name == "APEX FastMCP Profile Pilot"
 
 
 @pytest.mark.asyncio
