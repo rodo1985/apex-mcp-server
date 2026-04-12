@@ -177,6 +177,7 @@ VERCEL_BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
 Without Blob, the deployed server falls back to ephemeral file storage inside the serverless runtime. That is fine for a very small demo, but it is not durable across cold starts or redeployments.
 
 For the full manual Vercel deployment and remote testing guide, see [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
+For the reusable end-to-end guide you can apply to future MCP servers, including the manual Vercel upload path and WorkOS/Claude setup, see [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md).
 
 ### Client connection notes
 

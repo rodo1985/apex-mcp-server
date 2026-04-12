@@ -21,6 +21,7 @@
   - `make lint`
 - When behavior, setup, or configuration changes, update [README.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/README.md) in the same change.
 - When deployment behavior changes, also update [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
+- Keep the reusable from-scratch deployment guide current in [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md) when WorkOS, Vercel, or Claude setup steps change.
 - Keep function, method, and class docstrings complete and practical.
 - Preserve the current product scope:
   - one profile document
@@ -32,6 +33,7 @@
 ## File routing
 
 - Start with [README.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/README.md) for setup and user-facing behavior.
+- Use [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md) for the full manual and agent-assisted deployment flow.
 - Use [src/apex_mcp_server/server.py](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/src/apex_mcp_server/server.py) for the MCP surface: tools, resource, and prompt.
 - Use [src/apex_mcp_server/auth.py](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/src/apex_mcp_server/auth.py) and [src/apex_mcp_server/config.py](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/src/apex_mcp_server/config.py) for auth and runtime settings.
 - Use [src/apex_mcp_server/storage.py](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/src/apex_mcp_server/storage.py) for profile persistence behavior.

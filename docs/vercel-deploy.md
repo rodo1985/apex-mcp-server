@@ -13,19 +13,13 @@ The repo includes:
 - `api/index.py` as the Vercel Python Function entrypoint
 - `vercel.json` rewrite for `/mcp`
 
-## Current project status
+## Production URL shape
 
-This repo is already linked to the Vercel project `apex-mcp-server` in the team `rodo1985-1166s-projects`.
-
-Current stable production aliases:
-
-- `https://apex-mcp-server.vercel.app`
-- `https://apex-mcp-server-rodo1985-1166s-projects.vercel.app`
-
-Current MCP endpoint:
+Use placeholders like these when adapting the guide to another project:
 
 ```text
-https://apex-mcp-server-rodo1985-1166s-projects.vercel.app/mcp
+Base URL: https://your-app.vercel.app
+MCP URL:  https://your-app.vercel.app/mcp
 ```
 
 ## Local bearer-token mode
@@ -134,21 +128,21 @@ Do not commit bearer tokens into the repo.
 1. Link the repo to the Vercel project if needed.
 
 ```bash
-vercel link --scope rodo1985-1166s-projects
+vercel link
 ```
 
 2. Set the required environment variables in Vercel.
 
 ```bash
-vercel env add MCP_AUTH_MODE production --scope rodo1985-1166s-projects
-vercel env add MCP_PUBLIC_BASE_URL production --scope rodo1985-1166s-projects
-vercel env add WORKOS_AUTHKIT_DOMAIN production --scope rodo1985-1166s-projects
+vercel env add MCP_AUTH_MODE production
+vercel env add MCP_PUBLIC_BASE_URL production
+vercel env add WORKOS_AUTHKIT_DOMAIN production
 ```
 
 3. Deploy to production:
 
 ```bash
-vercel deploy . --prod --scope rodo1985-1166s-projects
+vercel deploy . --prod
 ```
 
 4. Verify the MCP endpoint is live:
@@ -198,18 +192,3 @@ Use this checklist when you want to keep local testing simple:
 - Without Blob, Vercel storage is not durable.
 - OAuth mode is the recommended path for Claude.ai.
 - Bearer-token mode remains useful for local development and direct developer tooling.
-2. Deploy production.
-3. Choose one Vercel protection mode:
-   - Recommended for this PoC: disable Vercel Authentication for production
-   - Alternative: keep it enabled and generate a Protection Bypass for Automation secret
-4. Configure the client:
-   - always send `Authorization: Bearer <MCP_API_TOKEN>`
-   - if Deployment Protection remains enabled, also send `x-vercel-protection-bypass: <secret>`
-5. Call `whoami` first to confirm the remote connection is correct.
-
-## Notes
-
-- The same bearer token flow works locally and on Vercel.
-- Without Blob, Vercel storage is not durable.
-- This private bearer-token setup is a good fit for Claude and Codex style private MCP usage.
-- If you later need ChatGPT-style published OAuth flows, add a real OAuth provider as a separate follow-up step instead of complicating this pilot now.
