@@ -137,10 +137,7 @@ def build_workos_auth_provider(settings: Settings) -> AuthProvider:
         ...     api_token=None,
         ...     public_base_url="https://example.com",
         ...     workos_authkit_domain="https://example.authkit.app",
-        ...     profile_storage_backend="file",
-        ...     profiles_dir=__import__("pathlib").Path("."),
-        ...     blob_prefix="profiles",
-        ...     blob_read_write_token=None,
+        ...     database_url="postgresql://demo:demo@localhost:5432/demo",
         ... )
         >>> provider = build_workos_auth_provider(settings)
         >>> provider is not None

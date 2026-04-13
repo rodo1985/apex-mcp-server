@@ -2,18 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from apex_mcp_server.config import (
-    Settings,
-    _resolve_auth_mode,
-    _resolve_storage_backend,
-)
-from apex_mcp_server.storage import (
-    BlobProfileStore,
-    FileProfileStore,
-    build_profile_store,
-)
+from apex_mcp_server.config import Settings, _resolve_auth_mode
+from apex_mcp_server.storage import PostgresUserStore, build_user_store
 
 
 def test_resolve_auth_mode_defaults_to_none_without_token() -> None:
@@ -74,77 +64,34 @@ def test_resolve_auth_mode_honors_explicit_oauth_mode() -> None:
     assert auth_mode == "oauth"
 
 
-def test_resolve_storage_backend_uses_file_on_vercel_without_blob_token() -> None:
-    """Ensure Vercel previews still boot before Blob is configured.
-
-    Parameters:
-        None.
-
-    Returns:
-        None.
-
-    Raises:
-        AssertionError: If preview deployments default to Blob too early.
-    """
-
-    backend = _resolve_storage_backend({"VERCEL": "1"})  # type: ignore[arg-type]
-
-    assert backend == "file"
-
-
-def test_resolve_storage_backend_uses_blob_when_blob_token_exists() -> None:
-    """Ensure Vercel auto-selects Blob when the platform token is present.
-
-    Parameters:
-        None.
-
-    Returns:
-        None.
-
-    Raises:
-        AssertionError: If configured Blob deployments fail to use Blob.
-    """
-
-    backend = _resolve_storage_backend(  # type: ignore[arg-type]
-        {"VERCEL": "1", "VERCEL_BLOB_READ_WRITE_TOKEN": "demo-token"}
-    )
-
-    assert backend == "blob"
-
-
-def test_settings_reads_platform_blob_token(monkeypatch, tmp_path: Path) -> None:
-    """Ensure settings normalize the Vercel-injected Blob token variable.
+def test_settings_require_database_url(monkeypatch) -> None:
+    """Ensure the Postgres baseline fails fast without a database URL.
 
     Parameters:
         monkeypatch: Pytest fixture for temporary environment overrides.
-        tmp_path: Temporary directory used for the local profiles path.
 
     Returns:
         None.
 
     Raises:
-        AssertionError: If the normalized settings drop the Blob token.
+        AssertionError: If settings load without a database URL.
     """
 
-    monkeypatch.setenv("VERCEL", "1")
-    monkeypatch.setenv("VERCEL_BLOB_READ_WRITE_TOKEN", "demo-token")
-    monkeypatch.setenv("PROFILES_DIR", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    settings = Settings.from_env()
+    try:
+        Settings.from_env()
+    except RuntimeError as exc:
+        assert str(exc) == "DATABASE_URL is required for the Postgres storage baseline."
+    else:
+        raise AssertionError("Expected DATABASE_URL to be required.")
 
-    assert settings.profile_storage_backend == "blob"
-    assert settings.blob_read_write_token == "demo-token"
 
-
-def test_oauth_settings_require_public_base_url(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
+def test_oauth_settings_require_public_base_url(monkeypatch) -> None:
     """Ensure OAuth mode fails fast when the public base URL is missing.
 
     Parameters:
         monkeypatch: Pytest fixture for temporary environment overrides.
-        tmp_path: Temporary directory used for the local profiles path.
 
     Returns:
         None.
@@ -153,9 +100,10 @@ def test_oauth_settings_require_public_base_url(
         AssertionError: If settings do not validate missing OAuth config.
     """
 
+    monkeypatch.setenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
     monkeypatch.setenv("MCP_AUTH_MODE", "oauth")
     monkeypatch.setenv("WORKOS_AUTHKIT_DOMAIN", "https://demo.authkit.app")
-    monkeypatch.setenv("PROFILES_DIR", str(tmp_path))
+    monkeypatch.delenv("MCP_PUBLIC_BASE_URL", raising=False)
 
     try:
         Settings.from_env()
@@ -165,12 +113,11 @@ def test_oauth_settings_require_public_base_url(
         raise AssertionError("Expected OAuth settings to require MCP_PUBLIC_BASE_URL.")
 
 
-def test_oauth_settings_require_authkit_domain(monkeypatch, tmp_path: Path) -> None:
+def test_oauth_settings_require_authkit_domain(monkeypatch) -> None:
     """Ensure OAuth mode fails fast when the AuthKit domain is missing.
 
     Parameters:
         monkeypatch: Pytest fixture for temporary environment overrides.
-        tmp_path: Temporary directory used for the local profiles path.
 
     Returns:
         None.
@@ -179,9 +126,10 @@ def test_oauth_settings_require_authkit_domain(monkeypatch, tmp_path: Path) -> N
         AssertionError: If settings do not validate missing AuthKit config.
     """
 
+    monkeypatch.setenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
     monkeypatch.setenv("MCP_AUTH_MODE", "oauth")
     monkeypatch.setenv("MCP_PUBLIC_BASE_URL", "https://example.com")
-    monkeypatch.setenv("PROFILES_DIR", str(tmp_path))
+    monkeypatch.delenv("WORKOS_AUTHKIT_DOMAIN", raising=False)
 
     try:
         Settings.from_env()
@@ -195,15 +143,11 @@ def test_oauth_settings_require_authkit_domain(monkeypatch, tmp_path: Path) -> N
         )
 
 
-def test_oauth_settings_succeed_with_required_values(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
+def test_oauth_settings_succeed_with_required_values(monkeypatch) -> None:
     """Ensure OAuth mode loads cleanly when required values are present.
 
     Parameters:
         monkeypatch: Pytest fixture for temporary environment overrides.
-        tmp_path: Temporary directory used for the local profiles path.
 
     Returns:
         None.
@@ -212,40 +156,42 @@ def test_oauth_settings_succeed_with_required_values(
         AssertionError: If valid OAuth settings are parsed incorrectly.
     """
 
+    monkeypatch.setenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
     monkeypatch.setenv("MCP_AUTH_MODE", "oauth")
     monkeypatch.setenv("MCP_PUBLIC_BASE_URL", "https://example.com")
     monkeypatch.setenv("WORKOS_AUTHKIT_DOMAIN", "https://demo.authkit.app")
-    monkeypatch.setenv("PROFILES_DIR", str(tmp_path))
 
     settings = Settings.from_env()
 
     assert settings.auth_mode == "oauth"
     assert settings.public_base_url == "https://example.com"
     assert settings.workos_authkit_domain == "https://demo.authkit.app"
+    assert settings.database_url == "postgresql://demo:demo@localhost:5432/demo"
 
 
-def test_build_profile_store_uses_file_store_on_vercel_without_blob_token(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """Ensure Vercel previews can build a store without Blob configuration.
+def test_build_user_store_returns_postgres_store() -> None:
+    """Ensure store creation now always targets Postgres.
 
     Parameters:
-        monkeypatch: Pytest fixture for temporary environment overrides.
-        tmp_path: Temporary directory used for the local profiles path.
+        None.
 
     Returns:
         None.
 
     Raises:
-        AssertionError: If store creation still requires Blob in previews.
+        AssertionError: If the configured storage backend is no longer Postgres.
     """
 
-    monkeypatch.setenv("VERCEL", "1")
-    monkeypatch.setenv("PROFILES_DIR", str(tmp_path))
+    settings = Settings(
+        app_name="APEX FastMCP Profile Pilot",
+        version="0.1.0",
+        auth_mode="none",
+        api_token=None,
+        public_base_url=None,
+        workos_authkit_domain=None,
+        database_url="postgresql://demo:demo@localhost:5432/demo",
+    )
 
-    settings = Settings.from_env()
-    store = build_profile_store(settings)
+    store = build_user_store(settings)
 
-    assert isinstance(store, FileProfileStore)
-    assert not isinstance(store, BlobProfileStore)
+    assert isinstance(store, PostgresUserStore)

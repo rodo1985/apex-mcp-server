@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-apex_mcp_server}
+      POSTGRES_USER: ${POSTGRES_USER:-apex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apex}
+    ports:
+      - "${POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-apex} -d ${POSTGRES_DB:-apex_mcp_server}",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MCP_AUTH_MODE: ${MCP_AUTH_MODE:-none}
+      MCP_API_TOKEN: ${MCP_API_TOKEN:-}
+      MCP_PUBLIC_BASE_URL: ${MCP_PUBLIC_BASE_URL:-}
+      WORKOS_AUTHKIT_DOMAIN: ${WORKOS_AUTHKIT_DOMAIN:-}
+      MCP_SERVER_NAME: ${MCP_SERVER_NAME:-APEX FastMCP Profile Pilot}
+      MCP_SERVER_VERSION: ${MCP_SERVER_VERSION:-0.1.0}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-apex}:${POSTGRES_PASSWORD:-apex}@db:5432/${POSTGRES_DB:-apex_mcp_server}
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:

@@ -20,8 +20,8 @@ Today the repo supports:
 - `MCP_AUTH_MODE=none` for fast local experiments
 - `MCP_AUTH_MODE=bearer` for a private shared-token flow
 - Vercel deployment at `/mcp`
-- local file storage by default
-- optional Vercel Blob storage
+- Postgres as the shared persistence layer
+- Docker Compose for local database setup
 
 This should stay true after the OAuth migration. Bearer-token auth is still useful for local testing and should not be removed.
 
@@ -64,7 +64,7 @@ For this repository, the simplest path is:
 2. Add a new production OAuth mode.
 3. Use WorkOS AuthKit for the production OAuth mode.
 4. Make the production `/mcp` endpoint publicly reachable to Claude.
-5. Keep Vercel Blob optional for profile persistence.
+5. Keep the Postgres `DATABASE_URL` model unchanged while switching auth modes.
 
 ## Proposed auth modes
 
@@ -165,14 +165,10 @@ MCP_API_TOKEN=<shared-local-token>
 
 ```text
 MCP_AUTH_MODE=oauth
-WORKOS_CLIENT_ID=...
-WORKOS_API_KEY=...
+DATABASE_URL=postgresql://user:password@host:5432/database
+MCP_PUBLIC_BASE_URL=https://your-public-domain
 WORKOS_AUTHKIT_DOMAIN=...
-PROFILE_STORAGE_BACKEND=file|blob
-VERCEL_BLOB_READ_WRITE_TOKEN=...
 ```
-
-Use the provider's exact required variable names during implementation.
 
 ## Suggested implementation order
 
@@ -207,8 +203,9 @@ Once deployed:
    - `whoami`
    - `set_profile`
    - `get_profile`
-5. Confirm profile persistence if Blob is enabled.
-6. Confirm reconnect works after token refresh.
+   - `set_user_data`
+   - `get_user_data`
+5. Confirm reconnect works after token refresh.
 
 ## What not to do
 

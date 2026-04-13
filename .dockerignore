@@ -1,0 +1,13 @@
+.git
+.gitignore
+.pytest_cache
+.ruff_cache
+.venv
+.vercel
+__pycache__
+docs
+tests
+*.pyc
+.env
+.env.local
+profiles

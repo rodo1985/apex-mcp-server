@@ -192,9 +192,6 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
-# Local profile data for the FastMCP pilot
-profiles/*.md
-
 # PyPI configuration file
 .pypirc
 

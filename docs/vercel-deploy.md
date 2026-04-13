@@ -22,6 +22,18 @@ Base URL: https://your-app.vercel.app
 MCP URL:  https://your-app.vercel.app/mcp
 ```
 
+## Storage model
+
+This baseline uses Postgres in every environment. Vercel only hosts the app layer.
+
+That means production needs:
+
+```text
+DATABASE_URL=postgresql://user:password@host:5432/database
+```
+
+The Postgres provider can be any managed or self-hosted service that exposes a normal connection string. This repo does not depend on a provider-specific SDK.
+
 ## Local bearer-token mode
 
 The repo still supports the existing bearer-token mode for local development and developer-facing clients.
@@ -39,16 +51,10 @@ That enables bearer-token auth without OAuth, Redis, or any extra auth provider.
 For `claude.ai`, the recommended production setup is OAuth mode with WorkOS AuthKit:
 
 ```text
+DATABASE_URL=postgresql://user:password@host:5432/database
 MCP_AUTH_MODE=oauth
 MCP_PUBLIC_BASE_URL=https://your-public-domain
 WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
-PROFILE_STORAGE_BACKEND=file|blob
-```
-
-Optional durable storage:
-
-```text
-VERCEL_BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
 ```
 
 ## Important Vercel protection note
@@ -73,39 +79,20 @@ https://claude.ai/api/mcp/auth_callback
 https://claude.com/api/mcp/auth_callback
 ```
 
-## Optional durable storage
-
-If you want profile changes to persist across redeployments and cold starts, add a Vercel Blob store to the same project and set:
-
-```text
-PROFILE_STORAGE_BACKEND=blob
-```
-
-Vercel Blob usually injects this automatically when the store belongs to the same project:
-
-```text
-VERCEL_BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
-```
-
-You can also provide `BLOB_READ_WRITE_TOKEN` manually if you prefer.
-
-If Blob is not configured, the server still works, but it uses ephemeral file storage inside the serverless runtime.
-
 ## Recommended environment variables
 
 Production:
 
 ```text
+DATABASE_URL=postgresql://user:password@host:5432/database
 MCP_AUTH_MODE=oauth
 MCP_PUBLIC_BASE_URL=https://your-public-domain
 WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
-PROFILE_STORAGE_BACKEND=file|blob
 ```
 
 Optional:
 
 ```text
-BLOB_PROFILE_PREFIX=profiles
 MCP_SERVER_NAME=APEX FastMCP Profile Pilot
 MCP_SERVER_VERSION=0.1.0
 ```
@@ -118,10 +105,10 @@ For deployed environments, put secrets in the Vercel project settings:
 
 For local development, keep secrets local only. Two simple options are:
 
-1. Export them in your shell before running `uvicorn`
+1. Copy `.env.example` to `.env.local`
 2. Use `vercel env pull` to copy Vercel env vars into a local env file that stays out of git
 
-Do not commit bearer tokens into the repo.
+Do not commit bearer tokens or database passwords into the repo.
 
 ## Deployment flow
 
@@ -134,6 +121,7 @@ vercel link
 2. Set the required environment variables in Vercel.
 
 ```bash
+vercel env add DATABASE_URL production
 vercel env add MCP_AUTH_MODE production
 vercel env add MCP_PUBLIC_BASE_URL production
 vercel env add WORKOS_AUTHKIT_DOMAIN production
@@ -158,6 +146,8 @@ https://<your-stable-production-domain>/mcp
 - `whoami`
 - `set_profile`
 - `get_profile`
+- `set_user_data`
+- `get_user_data`
 - `profile://me`
 - `use_profile`
 
@@ -165,30 +155,33 @@ https://<your-stable-production-domain>/mcp
 
 Use this checklist when you want to make the Vercel deployment reachable by Claude.ai:
 
-1. Confirm `MCP_AUTH_MODE=oauth` is set in Vercel Production.
-2. Confirm `MCP_PUBLIC_BASE_URL` matches the final public production URL.
-3. Confirm `WORKOS_AUTHKIT_DOMAIN` is set correctly.
-4. Confirm Vercel Deployment Protection is not blocking the production `/mcp` route.
-5. Deploy production.
-6. Add the connector in `claude.ai`.
-7. Complete the OAuth flow.
-8. Call `whoami` first to confirm the remote identity is correct.
-9. Verify `set_profile` and `get_profile` round-trip successfully.
+1. Confirm `DATABASE_URL` is set in Vercel Production.
+2. Confirm `MCP_AUTH_MODE=oauth` is set in Vercel Production.
+3. Confirm `MCP_PUBLIC_BASE_URL` matches the final public production URL.
+4. Confirm `WORKOS_AUTHKIT_DOMAIN` is set correctly.
+5. Confirm Vercel Deployment Protection is not blocking the production `/mcp` route.
+6. Deploy production.
+7. Add the connector in `claude.ai`.
+8. Complete the OAuth flow.
+9. Call `whoami` first to confirm the remote identity is correct.
+10. Verify `set_profile`, `get_profile`, `set_user_data`, and `get_user_data` round-trip successfully.
 
 ## Local development checklist
 
 Use this checklist when you want to keep local testing simple:
 
-1. For open local mode:
+1. Start the database:
+   - `make db-up`
+2. For open local mode:
    - `make run`
-2. For bearer-token local mode:
+3. For bearer-token local mode:
    - `make run-private MCP_API_TOKEN=dev-secret-token`
-3. Test with MCP Inspector or another direct MCP client using:
+4. Test with MCP Inspector or another direct MCP client using:
    - `Authorization: Bearer <MCP_API_TOKEN>`
 
 ## Notes
 
 - The same repo now supports both local bearer-token auth and production OAuth mode.
-- Without Blob, Vercel storage is not durable.
+- Postgres is the only persistence layer in this baseline.
 - OAuth mode is the recommended path for Claude.ai.
 - Bearer-token mode remains useful for local development and direct developer tooling.

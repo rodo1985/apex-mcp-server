@@ -9,20 +9,21 @@ from fastmcp.prompts import Message, PromptResult
 from apex_mcp_server.auth import build_auth_provider
 from apex_mcp_server.config import Settings
 from apex_mcp_server.identity import resolve_identity
-from apex_mcp_server.storage import ProfileStore, build_profile_store
+from apex_mcp_server.models import UserData
+from apex_mcp_server.storage import UserStore, build_user_store
 
 CURRENT_CONTEXT = CurrentContext()
 
 
 def create_mcp_server(
     settings: Settings | None = None,
-    store: ProfileStore | None = None,
+    store: UserStore | None = None,
 ) -> FastMCP:
     """Create the FastMCP server with tools, resource, and prompt.
 
     Parameters:
         settings: Optional pre-built runtime settings.
-        store: Optional profile store override, mainly useful in tests.
+        store: Optional store override, mainly useful in tests.
 
     Returns:
         FastMCP: A fully configured MCP server instance.
@@ -38,14 +39,14 @@ def create_mcp_server(
     """
 
     resolved_settings = settings or Settings.from_env()
-    resolved_store = store or build_profile_store(resolved_settings)
+    resolved_store = store or build_user_store(resolved_settings)
 
     mcp = FastMCP(
         name=resolved_settings.app_name,
         version=resolved_settings.version,
         instructions=(
             "A minimal FastMCP pilot that stores one protected markdown persona "
-            "profile and exposes tools, a resource, and a prompt."
+            "profile and a few numeric profile fields in Postgres."
         ),
         auth=build_auth_provider(resolved_settings),
     )
@@ -71,7 +72,7 @@ def create_mcp_server(
         """
 
         identity = resolve_identity(ctx, resolved_settings.auth_mode)
-        return await resolved_store.read(identity.user_key)
+        return await resolved_store.get_profile(identity.storage_subject())
 
     @mcp.tool
     async def set_profile(
@@ -85,7 +86,7 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Save confirmation including `saved`, `pathname`,
+            dict[str, object]: Save confirmation including `saved`, `subject`,
                 and `bytes`.
 
         Raises:
@@ -98,7 +99,74 @@ def create_mcp_server(
         """
 
         identity = resolve_identity(ctx, resolved_settings.auth_mode)
-        result = await resolved_store.write(identity.user_key, profile_markdown)
+        result = await resolved_store.set_profile(
+            identity.storage_subject(),
+            profile_markdown,
+            login=identity.login,
+        )
+        return result.as_dict()
+
+    @mcp.tool
+    async def get_user_data(ctx: Context = CURRENT_CONTEXT) -> dict[str, object]:
+        """Return the caller's saved numeric user data.
+
+        Parameters:
+            ctx: Current FastMCP request context injected automatically.
+
+        Returns:
+            dict[str, object]: Numeric user fields with nullable values.
+
+        Raises:
+            RuntimeError: If authentication is required but unavailable.
+            Exception: Propagated from the configured storage backend.
+
+        Example:
+            A connected MCP client can call `get_user_data` to fetch weight,
+            height, and FTP values stored for the current caller.
+        """
+
+        identity = resolve_identity(ctx, resolved_settings.auth_mode)
+        data = await resolved_store.get_user_data(identity.storage_subject())
+        return data.as_dict()
+
+    @mcp.tool
+    async def set_user_data(
+        weight_kg: float | None,
+        height_cm: float | None,
+        ftp_watts: int | None,
+        ctx: Context = CURRENT_CONTEXT,
+    ) -> dict[str, object]:
+        """Overwrite the caller's saved numeric user data.
+
+        Parameters:
+            weight_kg: Body weight in kilograms, or `null`.
+            height_cm: Height in centimeters, or `null`.
+            ftp_watts: Functional threshold power in watts, or `null`.
+            ctx: Current FastMCP request context injected automatically.
+
+        Returns:
+            dict[str, object]: Save confirmation plus the stored numeric values.
+
+        Raises:
+            RuntimeError: If authentication is required but unavailable.
+            Exception: Propagated from the configured storage backend.
+
+        Example:
+            A connected MCP client can call `set_user_data(weight_kg=68.5,
+            height_cm=174.0, ftp_watts=250)` to persist simple tabular data.
+        """
+
+        identity = resolve_identity(ctx, resolved_settings.auth_mode)
+        data = UserData(
+            weight_kg=weight_kg,
+            height_cm=height_cm,
+            ftp_watts=ftp_watts,
+        )
+        result = await resolved_store.set_user_data(
+            identity.storage_subject(),
+            data,
+            login=identity.login,
+        )
         return result.as_dict()
 
     @mcp.tool
@@ -117,7 +185,7 @@ def create_mcp_server(
 
         Example:
             Call `whoami` after connecting a remote MCP client to confirm the
-            current bearer-token identity and request wiring.
+            current bearer-token or OAuth identity wiring.
         """
 
         identity = resolve_identity(ctx, resolved_settings.auth_mode)
@@ -148,7 +216,7 @@ def create_mcp_server(
         """
 
         identity = resolve_identity(ctx, resolved_settings.auth_mode)
-        return await resolved_store.read(identity.user_key)
+        return await resolved_store.get_profile(identity.storage_subject())
 
     @mcp.prompt(
         description="Inject the caller's saved profile into a simple task prompt.",
@@ -174,7 +242,7 @@ def create_mcp_server(
         """
 
         identity = resolve_identity(ctx, resolved_settings.auth_mode)
-        profile_markdown = await resolved_store.read(identity.user_key)
+        profile_markdown = await resolved_store.get_profile(identity.storage_subject())
 
         if profile_markdown.strip():
             profile_block = profile_markdown
