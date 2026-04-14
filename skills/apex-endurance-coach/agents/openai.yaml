@@ -1,0 +1,4 @@
+interface:
+  display_name: "APEX Coach"
+  short_description: "APEX nutrition and training coach"
+  default_prompt: "Use $apex-endurance-coach to coach me through meal logging, daily targets, and training-aware nutrition planning with the APEX MCP tools."
