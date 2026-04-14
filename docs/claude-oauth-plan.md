@@ -2,6 +2,10 @@
 
 This document describes the second step for this repository: keep bearer-token auth for local development, and add an OAuth-compatible production mode for connecting the Vercel deployment to `claude.ai`, including iPhone use.
 
+Treat it as background design context. The current repo has since expanded the
+MCP surface and Postgres schema beyond the exact scope described here, but the
+WorkOS/Vercel OAuth guidance is still relevant.
+
 ## Why this second step exists
 
 The current bearer-token setup is a good local and developer-client solution:

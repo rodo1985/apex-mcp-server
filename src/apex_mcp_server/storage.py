@@ -1,18 +1,16 @@
-"""Postgres-backed storage for the FastMCP pilot."""
+"""Postgres-backed storage for the FastMCP wellness pilot."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
+from datetime import date, datetime
 
 import asyncpg
 
 from apex_mcp_server.config import Settings
-from apex_mcp_server.models import (
-    ProfileSaveResult,
-    UserData,
-    UserDataSaveResult,
-)
+from apex_mcp_server.models import ProfileSaveResult, UserData, UserDataSaveResult
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS user_profiles (
@@ -25,39 +23,167 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE user_profiles
+    ADD COLUMN IF NOT EXISTS diet_preferences_markdown TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS diet_goals_markdown TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS training_goals_markdown TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS food_products (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    name TEXT NOT NULL,
+    default_serving_g DOUBLE PRECISION,
+    calories_per_100g DOUBLE PRECISION NOT NULL,
+    carbs_g_per_100g DOUBLE PRECISION NOT NULL,
+    protein_g_per_100g DOUBLE PRECISION NOT NULL,
+    fat_g_per_100g DOUBLE PRECISION NOT NULL,
+    notes_markdown TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (subject, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_food_products_subject_name
+    ON food_products (subject, name);
+
+CREATE TABLE IF NOT EXISTS daily_targets (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    target_date DATE NOT NULL,
+    target_food_calories DOUBLE PRECISION NOT NULL,
+    target_exercise_calories DOUBLE PRECISION NOT NULL,
+    target_protein_g DOUBLE PRECISION NOT NULL,
+    target_carbs_g DOUBLE PRECISION NOT NULL,
+    target_fat_g DOUBLE PRECISION NOT NULL,
+    notes_markdown TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (subject, target_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_targets_subject_date
+    ON daily_targets (subject, target_date);
+
+CREATE TABLE IF NOT EXISTS daily_meals (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    meal_date DATE NOT NULL,
+    meal_label TEXT NOT NULL,
+    notes_markdown TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_meals_subject_date
+    ON daily_meals (subject, meal_date);
+
+CREATE TABLE IF NOT EXISTS meal_items (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    meal_id BIGINT NOT NULL REFERENCES daily_meals(id) ON DELETE CASCADE,
+    product_id BIGINT REFERENCES food_products(id) ON DELETE SET NULL,
+    ingredient_name TEXT NOT NULL,
+    grams DOUBLE PRECISION NOT NULL,
+    calories DOUBLE PRECISION NOT NULL,
+    carbs_g DOUBLE PRECISION NOT NULL,
+    protein_g DOUBLE PRECISION NOT NULL,
+    fat_g DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_meal_items_subject_meal
+    ON meal_items (subject, meal_id);
+
+CREATE TABLE IF NOT EXISTS activity_entries (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    activity_date DATE NOT NULL,
+    title TEXT NOT NULL,
+    external_source TEXT,
+    external_activity_id TEXT,
+    athlete_id TEXT,
+    sport_type TEXT,
+    distance_meters DOUBLE PRECISION,
+    moving_time_seconds INTEGER,
+    elapsed_time_seconds INTEGER,
+    total_elevation_gain_meters DOUBLE PRECISION,
+    average_speed_mps DOUBLE PRECISION,
+    max_speed_mps DOUBLE PRECISION,
+    average_heartrate DOUBLE PRECISION,
+    max_heartrate DOUBLE PRECISION,
+    average_watts DOUBLE PRECISION,
+    weighted_average_watts DOUBLE PRECISION,
+    calories DOUBLE PRECISION,
+    kilojoules DOUBLE PRECISION,
+    suffer_score DOUBLE PRECISION,
+    trainer BOOLEAN NOT NULL DEFAULT FALSE,
+    commute BOOLEAN NOT NULL DEFAULT FALSE,
+    manual BOOLEAN NOT NULL DEFAULT TRUE,
+    is_private BOOLEAN NOT NULL DEFAULT FALSE,
+    zones JSONB,
+    laps JSONB,
+    streams JSONB,
+    raw_payload JSONB,
+    notes_markdown TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_entries_subject_date
+    ON activity_entries (subject, activity_date);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_activity_entries_external
+    ON activity_entries (subject, external_source, external_activity_id)
+    WHERE external_source IS NOT NULL AND external_activity_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS memory_items (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    title TEXT NOT NULL,
+    category TEXT,
+    content_markdown TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_items_subject_created
+    ON memory_items (subject, created_at DESC);
 """.strip()
+
+_DOCUMENT_COLUMNS = {
+    "profile_markdown",
+    "diet_preferences_markdown",
+    "diet_goals_markdown",
+    "training_goals_markdown",
+}
+
+_JSON_COLUMNS = {
+    "zones",
+    "laps",
+    "streams",
+    "raw_payload",
+}
 
 
 class UserStore(ABC):
-    """Define the read/write contract for persisted user data.
+    """Define the persisted wellness-data contract used by the MCP server.
 
     Parameters:
         None.
 
     Returns:
-        UserStore: An abstract interface implemented by concrete backends.
+        UserStore: Abstract storage interface implemented by the Postgres
+            backend and test doubles.
 
     Raises:
         This abstract base class does not raise errors directly.
-
-    Example:
-        >>> isinstance(UserStore.__mro__[0], type)
-        True
     """
 
     @abstractmethod
     async def get_profile(self, subject: str) -> str:
-        """Read the saved markdown profile for a subject.
-
-        Parameters:
-            subject: Stable database subject for the profile owner.
-
-        Returns:
-            str: Markdown profile content, or an empty string when missing.
-
-        Raises:
-            Exception: Concrete backends may raise backend-specific errors.
-        """
+        """Read the saved profile markdown for a subject."""
 
     @abstractmethod
     async def set_profile(
@@ -66,33 +192,11 @@ class UserStore(ABC):
         profile_markdown: str,
         login: str | None = None,
     ) -> ProfileSaveResult:
-        """Overwrite the markdown profile for a subject.
-
-        Parameters:
-            subject: Stable database subject for the profile owner.
-            profile_markdown: New markdown content to persist.
-            login: Optional friendly login captured from the auth layer.
-
-        Returns:
-            ProfileSaveResult: Summary of the write operation.
-
-        Raises:
-            Exception: Concrete backends may raise backend-specific errors.
-        """
+        """Overwrite the saved profile markdown for a subject."""
 
     @abstractmethod
     async def get_user_data(self, subject: str) -> UserData:
-        """Read the saved numeric user data for a subject.
-
-        Parameters:
-            subject: Stable database subject for the row owner.
-
-        Returns:
-            UserData: Stored numeric fields, or `None` values when missing.
-
-        Raises:
-            Exception: Concrete backends may raise backend-specific errors.
-        """
+        """Read the saved numeric user data for a subject."""
 
     @abstractmethod
     async def set_user_data(
@@ -101,48 +205,394 @@ class UserStore(ABC):
         data: UserData,
         login: str | None = None,
     ) -> UserDataSaveResult:
-        """Overwrite the numeric user data for a subject.
+        """Overwrite the saved numeric user data for a subject."""
 
-        Parameters:
-            subject: Stable database subject for the row owner.
-            data: Numeric user data to persist.
-            login: Optional friendly login captured from the auth layer.
+    @abstractmethod
+    async def get_diet_preferences(self, subject: str) -> str:
+        """Read the saved diet-preferences markdown for a subject."""
 
-        Returns:
-            UserDataSaveResult: Summary of the completed write.
+    @abstractmethod
+    async def set_diet_preferences(
+        self,
+        subject: str,
+        diet_preferences_markdown: str,
+        login: str | None = None,
+    ) -> ProfileSaveResult:
+        """Overwrite the saved diet-preferences markdown for a subject."""
 
-        Raises:
-            Exception: Concrete backends may raise backend-specific errors.
-        """
+    @abstractmethod
+    async def get_diet_goals(self, subject: str) -> str:
+        """Read the saved diet-goals markdown for a subject."""
+
+    @abstractmethod
+    async def set_diet_goals(
+        self,
+        subject: str,
+        diet_goals_markdown: str,
+        login: str | None = None,
+    ) -> ProfileSaveResult:
+        """Overwrite the saved diet-goals markdown for a subject."""
+
+    @abstractmethod
+    async def get_training_goals(self, subject: str) -> str:
+        """Read the saved training-goals markdown for a subject."""
+
+    @abstractmethod
+    async def set_training_goals(
+        self,
+        subject: str,
+        training_goals_markdown: str,
+        login: str | None = None,
+    ) -> ProfileSaveResult:
+        """Overwrite the saved training-goals markdown for a subject."""
+
+    @abstractmethod
+    async def list_products(self, subject: str) -> list[dict[str, object]]:
+        """List all food products owned by a subject."""
+
+    @abstractmethod
+    async def get_product(
+        self,
+        subject: str,
+        product_id: int,
+    ) -> dict[str, object] | None:
+        """Read one food product owned by a subject."""
+
+    @abstractmethod
+    async def add_product(
+        self,
+        subject: str,
+        name: str,
+        default_serving_g: float | None,
+        calories_per_100g: float,
+        carbs_g_per_100g: float,
+        protein_g_per_100g: float,
+        fat_g_per_100g: float,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Create a new food product for a subject."""
+
+    @abstractmethod
+    async def update_product(
+        self,
+        subject: str,
+        product_id: int,
+        name: str,
+        default_serving_g: float | None,
+        calories_per_100g: float,
+        carbs_g_per_100g: float,
+        protein_g_per_100g: float,
+        fat_g_per_100g: float,
+        notes_markdown: str = "",
+    ) -> dict[str, object] | None:
+        """Replace one food product owned by a subject."""
+
+    @abstractmethod
+    async def delete_product(
+        self,
+        subject: str,
+        product_id: int,
+    ) -> dict[str, object]:
+        """Delete one food product owned by a subject."""
+
+    @abstractmethod
+    async def list_daily_targets(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List daily targets for a subject, optionally within a date range."""
+
+    @abstractmethod
+    async def get_daily_target(
+        self,
+        subject: str,
+        target_date: str,
+    ) -> dict[str, object] | None:
+        """Read one daily target row for a subject and date."""
+
+    @abstractmethod
+    async def set_daily_target(
+        self,
+        subject: str,
+        target_date: str,
+        target_food_calories: float,
+        target_exercise_calories: float,
+        target_protein_g: float,
+        target_carbs_g: float,
+        target_fat_g: float,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Upsert one daily target row for a subject and date."""
+
+    @abstractmethod
+    async def delete_daily_target(
+        self,
+        subject: str,
+        target_date: str,
+    ) -> dict[str, object]:
+        """Delete one daily target row for a subject and date."""
+
+    @abstractmethod
+    async def list_daily_meals(
+        self,
+        subject: str,
+        meal_date: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List daily meals for a subject, optionally scoped to one day."""
+
+    @abstractmethod
+    async def get_meal(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> dict[str, object] | None:
+        """Read one meal header owned by a subject."""
+
+    @abstractmethod
+    async def add_meal(
+        self,
+        subject: str,
+        meal_date: str,
+        meal_label: str,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Create a meal header for a subject."""
+
+    @abstractmethod
+    async def update_meal(
+        self,
+        subject: str,
+        meal_id: int,
+        meal_date: str,
+        meal_label: str,
+        notes_markdown: str = "",
+    ) -> dict[str, object] | None:
+        """Replace one meal header owned by a subject."""
+
+    @abstractmethod
+    async def delete_meal(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> dict[str, object]:
+        """Delete one meal header owned by a subject."""
+
+    @abstractmethod
+    async def list_meal_items(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> list[dict[str, object]]:
+        """List all meal items for one meal owned by a subject."""
+
+    @abstractmethod
+    async def add_meal_item(
+        self,
+        subject: str,
+        meal_id: int,
+        grams: float,
+        ingredient_name: str | None = None,
+        product_id: int | None = None,
+        calories: float | None = None,
+        carbs_g: float | None = None,
+        protein_g: float | None = None,
+        fat_g: float | None = None,
+    ) -> dict[str, object]:
+        """Create one meal item owned by a subject."""
+
+    @abstractmethod
+    async def update_meal_item(
+        self,
+        subject: str,
+        meal_item_id: int,
+        meal_id: int,
+        grams: float,
+        ingredient_name: str | None = None,
+        product_id: int | None = None,
+        calories: float | None = None,
+        carbs_g: float | None = None,
+        protein_g: float | None = None,
+        fat_g: float | None = None,
+    ) -> dict[str, object] | None:
+        """Replace one meal item owned by a subject."""
+
+    @abstractmethod
+    async def delete_meal_item(
+        self,
+        subject: str,
+        meal_item_id: int,
+    ) -> dict[str, object]:
+        """Delete one meal item owned by a subject."""
+
+    @abstractmethod
+    async def list_activities(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        external_source: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List activity entries for a subject."""
+
+    @abstractmethod
+    async def get_activity(
+        self,
+        subject: str,
+        activity_id: int,
+    ) -> dict[str, object] | None:
+        """Read one activity entry owned by a subject."""
+
+    @abstractmethod
+    async def add_activity(
+        self,
+        subject: str,
+        activity_date: str,
+        title: str,
+        external_source: str | None = None,
+        external_activity_id: str | None = None,
+        athlete_id: str | None = None,
+        sport_type: str | None = None,
+        distance_meters: float | None = None,
+        moving_time_seconds: int | None = None,
+        elapsed_time_seconds: int | None = None,
+        total_elevation_gain_meters: float | None = None,
+        average_speed_mps: float | None = None,
+        max_speed_mps: float | None = None,
+        average_heartrate: float | None = None,
+        max_heartrate: float | None = None,
+        average_watts: float | None = None,
+        weighted_average_watts: float | None = None,
+        calories: float | None = None,
+        kilojoules: float | None = None,
+        suffer_score: float | None = None,
+        trainer: bool = False,
+        commute: bool = False,
+        manual: bool = True,
+        is_private: bool = False,
+        zones: dict[str, object] | None = None,
+        laps: list[dict[str, object]] | None = None,
+        streams: dict[str, object] | None = None,
+        raw_payload: dict[str, object] | None = None,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Create one activity entry for a subject."""
+
+    @abstractmethod
+    async def update_activity(
+        self,
+        subject: str,
+        activity_id: int,
+        activity_date: str,
+        title: str,
+        external_source: str | None = None,
+        external_activity_id: str | None = None,
+        athlete_id: str | None = None,
+        sport_type: str | None = None,
+        distance_meters: float | None = None,
+        moving_time_seconds: int | None = None,
+        elapsed_time_seconds: int | None = None,
+        total_elevation_gain_meters: float | None = None,
+        average_speed_mps: float | None = None,
+        max_speed_mps: float | None = None,
+        average_heartrate: float | None = None,
+        max_heartrate: float | None = None,
+        average_watts: float | None = None,
+        weighted_average_watts: float | None = None,
+        calories: float | None = None,
+        kilojoules: float | None = None,
+        suffer_score: float | None = None,
+        trainer: bool = False,
+        commute: bool = False,
+        manual: bool = True,
+        is_private: bool = False,
+        zones: dict[str, object] | None = None,
+        laps: list[dict[str, object]] | None = None,
+        streams: dict[str, object] | None = None,
+        raw_payload: dict[str, object] | None = None,
+        notes_markdown: str = "",
+    ) -> dict[str, object] | None:
+        """Replace one activity entry owned by a subject."""
+
+    @abstractmethod
+    async def delete_activity(
+        self,
+        subject: str,
+        activity_id: int,
+    ) -> dict[str, object]:
+        """Delete one activity entry owned by a subject."""
+
+    @abstractmethod
+    async def list_memory_items(
+        self,
+        subject: str,
+        category: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List long-term memory items for a subject."""
+
+    @abstractmethod
+    async def get_memory_item(
+        self,
+        subject: str,
+        memory_item_id: int,
+    ) -> dict[str, object] | None:
+        """Read one long-term memory item owned by a subject."""
+
+    @abstractmethod
+    async def add_memory_item(
+        self,
+        subject: str,
+        title: str,
+        content_markdown: str,
+        category: str | None = None,
+    ) -> dict[str, object]:
+        """Create one long-term memory item for a subject."""
+
+    @abstractmethod
+    async def update_memory_item(
+        self,
+        subject: str,
+        memory_item_id: int,
+        title: str,
+        content_markdown: str,
+        category: str | None = None,
+    ) -> dict[str, object] | None:
+        """Replace one long-term memory item owned by a subject."""
+
+    @abstractmethod
+    async def delete_memory_item(
+        self,
+        subject: str,
+        memory_item_id: int,
+    ) -> dict[str, object]:
+        """Delete one long-term memory item owned by a subject."""
+
+    @abstractmethod
+    async def get_daily_summary(
+        self,
+        subject: str,
+        target_date: str,
+    ) -> dict[str, object]:
+        """Compute the daily target-vs-actual summary for one date."""
 
     @abstractmethod
     async def close(self) -> None:
-        """Release any backend resources such as database pools.
-
-        Parameters:
-            None.
-
-        Returns:
-            None.
-
-        Raises:
-            Exception: Concrete backends may raise backend-specific errors.
-        """
+        """Release any backend resources such as database pools."""
 
 
 class PostgresUserStore(UserStore):
-    """Persist profile and user data in a shared Postgres table.
+    """Persist wellness data in Postgres using a straightforward SQL layer.
 
     Parameters:
         database_url: Async Postgres connection string.
-        schema_sql: SQL used to bootstrap the single-table baseline.
+        schema_sql: SQL used to bootstrap the current baseline schema.
 
     Returns:
-        PostgresUserStore: A storage backend that works the same way locally,
-            on Vercel, or on a VM as long as `DATABASE_URL` is available.
+        PostgresUserStore: Postgres storage backend used by the MCP server.
 
     Raises:
-        Exception: The underlying Postgres driver may raise connection or query
+        Exception: The underlying asyncpg driver may raise connection or query
             errors.
 
     Example:
@@ -152,11 +602,11 @@ class PostgresUserStore(UserStore):
     """
 
     def __init__(self, database_url: str, schema_sql: str = SCHEMA_SQL) -> None:
-        """Store the connection settings and bootstrap SQL.
+        """Store connection settings and bootstrap SQL for first use.
 
         Parameters:
             database_url: Async Postgres connection string.
-            schema_sql: SQL used to create the baseline table if needed.
+            schema_sql: SQL used to create or evolve the baseline schema.
 
         Returns:
             None.
@@ -171,30 +621,19 @@ class PostgresUserStore(UserStore):
         self._pool_lock = asyncio.Lock()
 
     async def get_profile(self, subject: str) -> str:
-        """Read the markdown profile stored for a subject.
+        """Read the profile markdown stored for a subject.
 
         Parameters:
-            subject: Stable database subject for the profile owner.
+            subject: Stable row owner for the current caller.
 
         Returns:
-            str: Stored markdown, or an empty string when no row exists yet.
+            str: Stored markdown, or an empty string when missing.
 
         Raises:
             Exception: Propagated from asyncpg when the query fails.
-
-        Example:
-            >>> import inspect
-            >>> inspect.iscoroutinefunction(PostgresUserStore.get_profile)
-            True
         """
 
-        row = await self._fetchrow(
-            "SELECT profile_markdown FROM user_profiles WHERE subject = $1",
-            subject,
-        )
-        if row is None:
-            return ""
-        return str(row["profile_markdown"] or "")
+        return await self._get_markdown_document(subject, "profile_markdown")
 
     async def set_profile(
         self,
@@ -202,35 +641,25 @@ class PostgresUserStore(UserStore):
         profile_markdown: str,
         login: str | None = None,
     ) -> ProfileSaveResult:
-        """Overwrite the markdown profile stored for a subject.
+        """Overwrite the profile markdown stored for a subject.
 
         Parameters:
-            subject: Stable database subject for the profile owner.
-            profile_markdown: Markdown content to persist.
+            subject: Stable row owner for the current caller.
+            profile_markdown: New markdown content for the profile.
             login: Optional friendly login captured from the auth layer.
 
         Returns:
-            ProfileSaveResult: Summary of the completed write.
+            ProfileSaveResult: Save confirmation used by the MCP tool.
 
         Raises:
             Exception: Propagated from asyncpg when the upsert fails.
         """
 
-        await self._execute(
-            """
-            INSERT INTO user_profiles (subject, login, profile_markdown)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (subject) DO UPDATE
-            SET
-                login = COALESCE(EXCLUDED.login, user_profiles.login),
-                profile_markdown = EXCLUDED.profile_markdown,
-                updated_at = NOW()
-            """,
+        await self._upsert_user_profile_fields(
             subject,
-            login,
-            profile_markdown,
+            login=login,
+            fields={"profile_markdown": profile_markdown},
         )
-
         return ProfileSaveResult(
             saved=True,
             subject=subject,
@@ -241,10 +670,10 @@ class PostgresUserStore(UserStore):
         """Read the numeric user data stored for a subject.
 
         Parameters:
-            subject: Stable database subject for the row owner.
+            subject: Stable row owner for the current caller.
 
         Returns:
-            UserData: Stored numeric values, or `None` values when missing.
+            UserData: Numeric body metrics, or all-null values when missing.
 
         Raises:
             Exception: Propagated from asyncpg when the query fails.
@@ -276,42 +705,26 @@ class PostgresUserStore(UserStore):
         """Overwrite the numeric user data stored for a subject.
 
         Parameters:
-            subject: Stable database subject for the row owner.
-            data: Numeric user data to persist.
+            subject: Stable row owner for the current caller.
+            data: Numeric values to persist.
             login: Optional friendly login captured from the auth layer.
 
         Returns:
-            UserDataSaveResult: Summary of the completed write.
+            UserDataSaveResult: Save confirmation used by the MCP tool.
 
         Raises:
             Exception: Propagated from asyncpg when the upsert fails.
         """
 
-        await self._execute(
-            """
-            INSERT INTO user_profiles (
-                subject,
-                login,
-                weight_kg,
-                height_cm,
-                ftp_watts
-            )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (subject) DO UPDATE
-            SET
-                login = COALESCE(EXCLUDED.login, user_profiles.login),
-                weight_kg = EXCLUDED.weight_kg,
-                height_cm = EXCLUDED.height_cm,
-                ftp_watts = EXCLUDED.ftp_watts,
-                updated_at = NOW()
-            """,
+        await self._upsert_user_profile_fields(
             subject,
-            login,
-            data.weight_kg,
-            data.height_cm,
-            data.ftp_watts,
+            login=login,
+            fields={
+                "weight_kg": data.weight_kg,
+                "height_cm": data.height_cm,
+                "ftp_watts": data.ftp_watts,
+            },
         )
-
         return UserDataSaveResult(
             saved=True,
             subject=subject,
@@ -319,6 +732,1571 @@ class PostgresUserStore(UserStore):
             height_cm=data.height_cm,
             ftp_watts=data.ftp_watts,
         )
+
+    async def get_diet_preferences(self, subject: str) -> str:
+        """Read the diet-preferences markdown stored for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+
+        Returns:
+            str: Stored markdown, or an empty string when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        return await self._get_markdown_document(
+            subject,
+            "diet_preferences_markdown",
+        )
+
+    async def set_diet_preferences(
+        self,
+        subject: str,
+        diet_preferences_markdown: str,
+        login: str | None = None,
+    ) -> ProfileSaveResult:
+        """Overwrite the diet-preferences markdown stored for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            diet_preferences_markdown: New markdown content.
+            login: Optional friendly login captured from the auth layer.
+
+        Returns:
+            ProfileSaveResult: Save confirmation used by the MCP tool.
+
+        Raises:
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        await self._upsert_user_profile_fields(
+            subject,
+            login=login,
+            fields={"diet_preferences_markdown": diet_preferences_markdown},
+        )
+        return ProfileSaveResult(
+            saved=True,
+            subject=subject,
+            bytes=len(diet_preferences_markdown.encode("utf-8")),
+        )
+
+    async def get_diet_goals(self, subject: str) -> str:
+        """Read the diet-goals markdown stored for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+
+        Returns:
+            str: Stored markdown, or an empty string when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        return await self._get_markdown_document(subject, "diet_goals_markdown")
+
+    async def set_diet_goals(
+        self,
+        subject: str,
+        diet_goals_markdown: str,
+        login: str | None = None,
+    ) -> ProfileSaveResult:
+        """Overwrite the diet-goals markdown stored for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            diet_goals_markdown: New markdown content.
+            login: Optional friendly login captured from the auth layer.
+
+        Returns:
+            ProfileSaveResult: Save confirmation used by the MCP tool.
+
+        Raises:
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        await self._upsert_user_profile_fields(
+            subject,
+            login=login,
+            fields={"diet_goals_markdown": diet_goals_markdown},
+        )
+        return ProfileSaveResult(
+            saved=True,
+            subject=subject,
+            bytes=len(diet_goals_markdown.encode("utf-8")),
+        )
+
+    async def get_training_goals(self, subject: str) -> str:
+        """Read the training-goals markdown stored for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+
+        Returns:
+            str: Stored markdown, or an empty string when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        return await self._get_markdown_document(subject, "training_goals_markdown")
+
+    async def set_training_goals(
+        self,
+        subject: str,
+        training_goals_markdown: str,
+        login: str | None = None,
+    ) -> ProfileSaveResult:
+        """Overwrite the training-goals markdown stored for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            training_goals_markdown: New markdown content.
+            login: Optional friendly login captured from the auth layer.
+
+        Returns:
+            ProfileSaveResult: Save confirmation used by the MCP tool.
+
+        Raises:
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        await self._upsert_user_profile_fields(
+            subject,
+            login=login,
+            fields={"training_goals_markdown": training_goals_markdown},
+        )
+        return ProfileSaveResult(
+            saved=True,
+            subject=subject,
+            bytes=len(training_goals_markdown.encode("utf-8")),
+        )
+
+    async def list_products(self, subject: str) -> list[dict[str, object]]:
+        """List all food products owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+
+        Returns:
+            list[dict[str, object]]: Product records ordered by name.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        rows = await self._fetch(
+            """
+            SELECT id, subject, name, default_serving_g, calories_per_100g,
+                   carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                   notes_markdown, created_at, updated_at
+            FROM food_products
+            WHERE subject = $1
+            ORDER BY LOWER(name), id
+            """,
+            subject,
+        )
+        return self._rows_to_dicts(rows)
+
+    async def get_product(
+        self,
+        subject: str,
+        product_id: int,
+    ) -> dict[str, object] | None:
+        """Read one food product owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            product_id: Product identifier within the subject's catalog.
+
+        Returns:
+            dict[str, object] | None: Product record, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT id, subject, name, default_serving_g, calories_per_100g,
+                   carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                   notes_markdown, created_at, updated_at
+            FROM food_products
+            WHERE subject = $1 AND id = $2
+            """,
+            subject,
+            product_id,
+        )
+        return self._row_to_dict(row)
+
+    async def add_product(
+        self,
+        subject: str,
+        name: str,
+        default_serving_g: float | None,
+        calories_per_100g: float,
+        carbs_g_per_100g: float,
+        protein_g_per_100g: float,
+        fat_g_per_100g: float,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Create one food product in the subject-private catalog.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            name: Display name of the product.
+            default_serving_g: Optional common serving size in grams.
+            calories_per_100g: Calories per 100 grams.
+            carbs_g_per_100g: Carbohydrates per 100 grams.
+            protein_g_per_100g: Protein per 100 grams.
+            fat_g_per_100g: Fat per 100 grams.
+            notes_markdown: Optional freeform product notes.
+
+        Returns:
+            dict[str, object]: Newly created product row.
+
+        Raises:
+            Exception: Propagated from asyncpg when the insert fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO food_products (
+                subject, name, default_serving_g, calories_per_100g,
+                carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                notes_markdown
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, subject, name, default_serving_g, calories_per_100g,
+                      carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                      notes_markdown, created_at, updated_at
+            """,
+            subject,
+            name,
+            default_serving_g,
+            calories_per_100g,
+            carbs_g_per_100g,
+            protein_g_per_100g,
+            fat_g_per_100g,
+            notes_markdown,
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for food_products.",
+        )
+
+    async def update_product(
+        self,
+        subject: str,
+        product_id: int,
+        name: str,
+        default_serving_g: float | None,
+        calories_per_100g: float,
+        carbs_g_per_100g: float,
+        protein_g_per_100g: float,
+        fat_g_per_100g: float,
+        notes_markdown: str = "",
+    ) -> dict[str, object] | None:
+        """Replace one food product owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            product_id: Product identifier within the subject's catalog.
+            name: Updated display name.
+            default_serving_g: Updated optional serving size.
+            calories_per_100g: Updated calories per 100 grams.
+            carbs_g_per_100g: Updated carbohydrates per 100 grams.
+            protein_g_per_100g: Updated protein per 100 grams.
+            fat_g_per_100g: Updated fat per 100 grams.
+            notes_markdown: Updated freeform notes.
+
+        Returns:
+            dict[str, object] | None: Updated product row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the update fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            UPDATE food_products
+            SET
+                name = $3,
+                default_serving_g = $4,
+                calories_per_100g = $5,
+                carbs_g_per_100g = $6,
+                protein_g_per_100g = $7,
+                fat_g_per_100g = $8,
+                notes_markdown = $9,
+                updated_at = NOW()
+            WHERE subject = $1 AND id = $2
+            RETURNING id, subject, name, default_serving_g, calories_per_100g,
+                      carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                      notes_markdown, created_at, updated_at
+            """,
+            subject,
+            product_id,
+            name,
+            default_serving_g,
+            calories_per_100g,
+            carbs_g_per_100g,
+            protein_g_per_100g,
+            fat_g_per_100g,
+            notes_markdown,
+        )
+        return self._row_to_dict(row)
+
+    async def delete_product(
+        self,
+        subject: str,
+        product_id: int,
+    ) -> dict[str, object]:
+        """Delete one food product owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            product_id: Product identifier within the subject's catalog.
+
+        Returns:
+            dict[str, object]: Deletion result with a boolean flag.
+
+        Raises:
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        command = await self._execute(
+            "DELETE FROM food_products WHERE subject = $1 AND id = $2",
+            subject,
+            product_id,
+        )
+        return {"deleted": command != "DELETE 0", "product_id": product_id}
+
+    async def list_daily_targets(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List daily target rows for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            date_from: Optional inclusive lower ISO date bound.
+            date_to: Optional inclusive upper ISO date bound.
+
+        Returns:
+            list[dict[str, object]]: Daily targets ordered by date.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        filters = ["subject = $1"]
+        args: list[object] = [subject]
+
+        if date_from is not None:
+            args.append(_parse_iso_date(date_from))
+            filters.append(f"target_date >= ${len(args)}")
+
+        if date_to is not None:
+            args.append(_parse_iso_date(date_to))
+            filters.append(f"target_date <= ${len(args)}")
+
+        rows = await self._fetch(
+            f"""
+            SELECT id, subject, target_date, target_food_calories,
+                   target_exercise_calories, target_protein_g, target_carbs_g,
+                   target_fat_g, notes_markdown, created_at, updated_at
+            FROM daily_targets
+            WHERE {' AND '.join(filters)}
+            ORDER BY target_date DESC, id DESC
+            """,
+            *args,
+        )
+        return self._rows_to_dicts(rows)
+
+    async def get_daily_target(
+        self,
+        subject: str,
+        target_date: str,
+    ) -> dict[str, object] | None:
+        """Read one daily target row for a subject and date.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            target_date: ISO calendar date for the requested target.
+
+        Returns:
+            dict[str, object] | None: Daily target row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT id, subject, target_date, target_food_calories,
+                   target_exercise_calories, target_protein_g, target_carbs_g,
+                   target_fat_g, notes_markdown, created_at, updated_at
+            FROM daily_targets
+            WHERE subject = $1 AND target_date = $2
+            """,
+            subject,
+            _parse_iso_date(target_date),
+        )
+        return self._row_to_dict(row)
+
+    async def set_daily_target(
+        self,
+        subject: str,
+        target_date: str,
+        target_food_calories: float,
+        target_exercise_calories: float,
+        target_protein_g: float,
+        target_carbs_g: float,
+        target_fat_g: float,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Upsert one daily target row for a subject and date.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            target_date: ISO calendar date for the target row.
+            target_food_calories: Target calories from food.
+            target_exercise_calories: Target calories expected from exercise.
+            target_protein_g: Target grams of protein.
+            target_carbs_g: Target grams of carbohydrates.
+            target_fat_g: Target grams of fat.
+            notes_markdown: Optional freeform notes for the day.
+
+        Returns:
+            dict[str, object]: Upserted daily target row.
+
+        Raises:
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO daily_targets (
+                subject, target_date, target_food_calories,
+                target_exercise_calories, target_protein_g, target_carbs_g,
+                target_fat_g, notes_markdown
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (subject, target_date) DO UPDATE
+            SET
+                target_food_calories = EXCLUDED.target_food_calories,
+                target_exercise_calories = EXCLUDED.target_exercise_calories,
+                target_protein_g = EXCLUDED.target_protein_g,
+                target_carbs_g = EXCLUDED.target_carbs_g,
+                target_fat_g = EXCLUDED.target_fat_g,
+                notes_markdown = EXCLUDED.notes_markdown,
+                updated_at = NOW()
+            RETURNING id, subject, target_date, target_food_calories,
+                      target_exercise_calories, target_protein_g,
+                      target_carbs_g, target_fat_g, notes_markdown,
+                      created_at, updated_at
+            """,
+            subject,
+            _parse_iso_date(target_date),
+            target_food_calories,
+            target_exercise_calories,
+            target_protein_g,
+            target_carbs_g,
+            target_fat_g,
+            notes_markdown,
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for daily_targets.",
+        )
+
+    async def delete_daily_target(
+        self,
+        subject: str,
+        target_date: str,
+    ) -> dict[str, object]:
+        """Delete one daily target row for a subject and date.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            target_date: ISO calendar date for the target row.
+
+        Returns:
+            dict[str, object]: Deletion result with the target date.
+
+        Raises:
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        parsed_date = _parse_iso_date(target_date)
+        command = await self._execute(
+            "DELETE FROM daily_targets WHERE subject = $1 AND target_date = $2",
+            subject,
+            parsed_date,
+        )
+        return {
+            "deleted": command != "DELETE 0",
+            "target_date": parsed_date.isoformat(),
+        }
+
+    async def list_daily_meals(
+        self,
+        subject: str,
+        meal_date: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List meal headers for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_date: Optional ISO date to limit the result to one day.
+
+        Returns:
+            list[dict[str, object]]: Meal header rows ordered by date and id.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        if meal_date is None:
+            rows = await self._fetch(
+                """
+                SELECT id, subject, meal_date, meal_label, notes_markdown,
+                       created_at, updated_at
+                FROM daily_meals
+                WHERE subject = $1
+                ORDER BY meal_date DESC, id DESC
+                """,
+                subject,
+            )
+            return self._rows_to_dicts(rows)
+
+        rows = await self._fetch(
+            """
+            SELECT id, subject, meal_date, meal_label, notes_markdown,
+                   created_at, updated_at
+            FROM daily_meals
+            WHERE subject = $1 AND meal_date = $2
+            ORDER BY id
+            """,
+            subject,
+            _parse_iso_date(meal_date),
+        )
+        return self._rows_to_dicts(rows)
+
+    async def get_meal(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> dict[str, object] | None:
+        """Read one meal header owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Meal identifier to fetch.
+
+        Returns:
+            dict[str, object] | None: Meal row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetch_meal(subject, meal_id)
+        return self._row_to_dict(row)
+
+    async def add_meal(
+        self,
+        subject: str,
+        meal_date: str,
+        meal_label: str,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Create one meal header for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_date: ISO calendar date for the meal.
+            meal_label: Free-text meal label such as lunch or post-workout.
+            notes_markdown: Optional meal-level notes.
+
+        Returns:
+            dict[str, object]: Newly created meal row.
+
+        Raises:
+            Exception: Propagated from asyncpg when the insert fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO daily_meals (subject, meal_date, meal_label, notes_markdown)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, subject, meal_date, meal_label, notes_markdown,
+                      created_at, updated_at
+            """,
+            subject,
+            _parse_iso_date(meal_date),
+            meal_label,
+            notes_markdown,
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for daily_meals.",
+        )
+
+    async def update_meal(
+        self,
+        subject: str,
+        meal_id: int,
+        meal_date: str,
+        meal_label: str,
+        notes_markdown: str = "",
+    ) -> dict[str, object] | None:
+        """Replace one meal header owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Meal identifier to update.
+            meal_date: Replacement ISO calendar date.
+            meal_label: Replacement free-text meal label.
+            notes_markdown: Replacement meal notes.
+
+        Returns:
+            dict[str, object] | None: Updated meal row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the update fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            UPDATE daily_meals
+            SET
+                meal_date = $3,
+                meal_label = $4,
+                notes_markdown = $5,
+                updated_at = NOW()
+            WHERE subject = $1 AND id = $2
+            RETURNING id, subject, meal_date, meal_label, notes_markdown,
+                      created_at, updated_at
+            """,
+            subject,
+            meal_id,
+            _parse_iso_date(meal_date),
+            meal_label,
+            notes_markdown,
+        )
+        return self._row_to_dict(row)
+
+    async def delete_meal(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> dict[str, object]:
+        """Delete one meal header owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Meal identifier to delete.
+
+        Returns:
+            dict[str, object]: Deletion result with the meal id.
+
+        Raises:
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        command = await self._execute(
+            "DELETE FROM daily_meals WHERE subject = $1 AND id = $2",
+            subject,
+            meal_id,
+        )
+        return {"deleted": command != "DELETE 0", "meal_id": meal_id}
+
+    async def list_meal_items(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> list[dict[str, object]]:
+        """List all meal items attached to one subject-owned meal.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Parent meal identifier.
+
+        Returns:
+            list[dict[str, object]]: Meal item rows ordered by id.
+
+        Raises:
+            RuntimeError: If the parent meal does not belong to the subject.
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        await self._require_meal(subject, meal_id)
+        rows = await self._fetch(
+            """
+            SELECT id, subject, meal_id, product_id, ingredient_name, grams,
+                   calories, carbs_g, protein_g, fat_g, created_at, updated_at
+            FROM meal_items
+            WHERE subject = $1 AND meal_id = $2
+            ORDER BY id
+            """,
+            subject,
+            meal_id,
+        )
+        return self._rows_to_dicts(rows)
+
+    async def add_meal_item(
+        self,
+        subject: str,
+        meal_id: int,
+        grams: float,
+        ingredient_name: str | None = None,
+        product_id: int | None = None,
+        calories: float | None = None,
+        carbs_g: float | None = None,
+        protein_g: float | None = None,
+        fat_g: float | None = None,
+    ) -> dict[str, object]:
+        """Create one meal item with either a product snapshot or manual macros.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Parent meal identifier.
+            grams: Consumed grams for the meal item.
+            ingredient_name: Free-text ingredient name for manual items or
+                optional custom label for catalog-based items.
+            product_id: Optional catalog product identifier used to compute the
+                nutrition snapshot.
+            calories: Manual calories for non-catalog items.
+            carbs_g: Manual carbohydrate grams for non-catalog items.
+            protein_g: Manual protein grams for non-catalog items.
+            fat_g: Manual fat grams for non-catalog items.
+
+        Returns:
+            dict[str, object]: Newly created meal item row.
+
+        Raises:
+            RuntimeError: If the meal or referenced product is invalid.
+            ValueError: If manual nutrient values are incomplete.
+            Exception: Propagated from asyncpg when the insert fails.
+        """
+
+        await self._require_meal(subject, meal_id)
+        snapshot = await self._build_meal_item_snapshot(
+            subject=subject,
+            product_id=product_id,
+            ingredient_name=ingredient_name,
+            grams=grams,
+            calories=calories,
+            carbs_g=carbs_g,
+            protein_g=protein_g,
+            fat_g=fat_g,
+        )
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO meal_items (
+                subject, meal_id, product_id, ingredient_name, grams,
+                calories, carbs_g, protein_g, fat_g
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, subject, meal_id, product_id, ingredient_name, grams,
+                      calories, carbs_g, protein_g, fat_g, created_at, updated_at
+            """,
+            subject,
+            meal_id,
+            product_id,
+            snapshot["ingredient_name"],
+            grams,
+            snapshot["calories"],
+            snapshot["carbs_g"],
+            snapshot["protein_g"],
+            snapshot["fat_g"],
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for meal_items.",
+        )
+
+    async def update_meal_item(
+        self,
+        subject: str,
+        meal_item_id: int,
+        meal_id: int,
+        grams: float,
+        ingredient_name: str | None = None,
+        product_id: int | None = None,
+        calories: float | None = None,
+        carbs_g: float | None = None,
+        protein_g: float | None = None,
+        fat_g: float | None = None,
+    ) -> dict[str, object] | None:
+        """Replace one meal item owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_item_id: Meal-item identifier to update.
+            meal_id: Replacement parent meal identifier.
+            grams: Replacement consumed grams.
+            ingredient_name: Replacement free-text ingredient name.
+            product_id: Replacement catalog product identifier, if any.
+            calories: Replacement manual calories for non-catalog items.
+            carbs_g: Replacement manual carbohydrate grams.
+            protein_g: Replacement manual protein grams.
+            fat_g: Replacement manual fat grams.
+
+        Returns:
+            dict[str, object] | None: Updated meal item row, or `None` when
+                the row does not exist for the subject.
+
+        Raises:
+            RuntimeError: If the meal or referenced product is invalid.
+            ValueError: If manual nutrient values are incomplete.
+            Exception: Propagated from asyncpg when the update fails.
+        """
+
+        await self._require_meal(subject, meal_id)
+        snapshot = await self._build_meal_item_snapshot(
+            subject=subject,
+            product_id=product_id,
+            ingredient_name=ingredient_name,
+            grams=grams,
+            calories=calories,
+            carbs_g=carbs_g,
+            protein_g=protein_g,
+            fat_g=fat_g,
+        )
+
+        row = await self._fetchrow(
+            """
+            UPDATE meal_items
+            SET
+                meal_id = $3,
+                product_id = $4,
+                ingredient_name = $5,
+                grams = $6,
+                calories = $7,
+                carbs_g = $8,
+                protein_g = $9,
+                fat_g = $10,
+                updated_at = NOW()
+            WHERE subject = $1 AND id = $2
+            RETURNING id, subject, meal_id, product_id, ingredient_name, grams,
+                      calories, carbs_g, protein_g, fat_g, created_at, updated_at
+            """,
+            subject,
+            meal_item_id,
+            meal_id,
+            product_id,
+            snapshot["ingredient_name"],
+            grams,
+            snapshot["calories"],
+            snapshot["carbs_g"],
+            snapshot["protein_g"],
+            snapshot["fat_g"],
+        )
+        return self._row_to_dict(row)
+
+    async def delete_meal_item(
+        self,
+        subject: str,
+        meal_item_id: int,
+    ) -> dict[str, object]:
+        """Delete one meal item owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_item_id: Meal-item identifier to delete.
+
+        Returns:
+            dict[str, object]: Deletion result with the meal-item id.
+
+        Raises:
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        command = await self._execute(
+            "DELETE FROM meal_items WHERE subject = $1 AND id = $2",
+            subject,
+            meal_item_id,
+        )
+        return {"deleted": command != "DELETE 0", "meal_item_id": meal_item_id}
+
+    async def list_activities(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        external_source: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List activity entries for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            date_from: Optional inclusive lower ISO date bound.
+            date_to: Optional inclusive upper ISO date bound.
+            external_source: Optional external-source filter such as `strava`.
+
+        Returns:
+            list[dict[str, object]]: Activity rows ordered by date and id.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        filters = ["subject = $1"]
+        args: list[object] = [subject]
+
+        if date_from is not None:
+            args.append(_parse_iso_date(date_from))
+            filters.append(f"activity_date >= ${len(args)}")
+
+        if date_to is not None:
+            args.append(_parse_iso_date(date_to))
+            filters.append(f"activity_date <= ${len(args)}")
+
+        if external_source is not None:
+            args.append(external_source)
+            filters.append(f"external_source = ${len(args)}")
+
+        rows = await self._fetch(
+            f"""
+            SELECT id, subject, activity_date, title, external_source,
+                   external_activity_id, athlete_id, sport_type,
+                   distance_meters, moving_time_seconds, elapsed_time_seconds,
+                   total_elevation_gain_meters, average_speed_mps, max_speed_mps,
+                   average_heartrate, max_heartrate, average_watts,
+                   weighted_average_watts, calories, kilojoules, suffer_score,
+                   trainer, commute, manual, is_private, zones, laps, streams,
+                   raw_payload, notes_markdown, created_at, updated_at
+            FROM activity_entries
+            WHERE {' AND '.join(filters)}
+            ORDER BY activity_date DESC, id DESC
+            """,
+            *args,
+        )
+        return self._rows_to_dicts(rows)
+
+    async def get_activity(
+        self,
+        subject: str,
+        activity_id: int,
+    ) -> dict[str, object] | None:
+        """Read one activity entry owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            activity_id: Activity identifier to fetch.
+
+        Returns:
+            dict[str, object] | None: Activity row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT id, subject, activity_date, title, external_source,
+                   external_activity_id, athlete_id, sport_type,
+                   distance_meters, moving_time_seconds, elapsed_time_seconds,
+                   total_elevation_gain_meters, average_speed_mps, max_speed_mps,
+                   average_heartrate, max_heartrate, average_watts,
+                   weighted_average_watts, calories, kilojoules, suffer_score,
+                   trainer, commute, manual, is_private, zones, laps, streams,
+                   raw_payload, notes_markdown, created_at, updated_at
+            FROM activity_entries
+            WHERE subject = $1 AND id = $2
+            """,
+            subject,
+            activity_id,
+        )
+        return self._row_to_dict(row)
+
+    async def add_activity(
+        self,
+        subject: str,
+        activity_date: str,
+        title: str,
+        external_source: str | None = None,
+        external_activity_id: str | None = None,
+        athlete_id: str | None = None,
+        sport_type: str | None = None,
+        distance_meters: float | None = None,
+        moving_time_seconds: int | None = None,
+        elapsed_time_seconds: int | None = None,
+        total_elevation_gain_meters: float | None = None,
+        average_speed_mps: float | None = None,
+        max_speed_mps: float | None = None,
+        average_heartrate: float | None = None,
+        max_heartrate: float | None = None,
+        average_watts: float | None = None,
+        weighted_average_watts: float | None = None,
+        calories: float | None = None,
+        kilojoules: float | None = None,
+        suffer_score: float | None = None,
+        trainer: bool = False,
+        commute: bool = False,
+        manual: bool = True,
+        is_private: bool = False,
+        zones: dict[str, object] | None = None,
+        laps: list[dict[str, object]] | None = None,
+        streams: dict[str, object] | None = None,
+        raw_payload: dict[str, object] | None = None,
+        notes_markdown: str = "",
+    ) -> dict[str, object]:
+        """Create one activity entry for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            activity_date: ISO calendar date for the activity.
+            title: Human-readable activity title.
+            external_source: Optional sync source such as `strava`.
+            external_activity_id: Optional upstream activity id.
+            athlete_id: Optional upstream athlete id.
+            sport_type: Optional activity type such as `Run`.
+            distance_meters: Optional distance.
+            moving_time_seconds: Optional moving time.
+            elapsed_time_seconds: Optional elapsed time.
+            total_elevation_gain_meters: Optional elevation gain.
+            average_speed_mps: Optional average speed.
+            max_speed_mps: Optional max speed.
+            average_heartrate: Optional average heart rate.
+            max_heartrate: Optional max heart rate.
+            average_watts: Optional average power.
+            weighted_average_watts: Optional weighted average power.
+            calories: Optional calories burned.
+            kilojoules: Optional work in kilojoules.
+            suffer_score: Optional training-load marker.
+            trainer: Whether the activity happened on a trainer.
+            commute: Whether the activity was a commute.
+            manual: Whether the entry was entered manually.
+            is_private: Whether the activity is private upstream.
+            zones: Optional zones JSON payload.
+            laps: Optional laps JSON payload.
+            streams: Optional streams JSON payload.
+            raw_payload: Optional full upstream payload for future reuse.
+            notes_markdown: Optional freeform notes.
+
+        Returns:
+            dict[str, object]: Newly created activity row.
+
+        Raises:
+            Exception: Propagated from asyncpg when the insert fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO activity_entries (
+                subject, activity_date, title, external_source,
+                external_activity_id, athlete_id, sport_type, distance_meters,
+                moving_time_seconds, elapsed_time_seconds,
+                total_elevation_gain_meters, average_speed_mps, max_speed_mps,
+                average_heartrate, max_heartrate, average_watts,
+                weighted_average_watts, calories, kilojoules, suffer_score,
+                trainer, commute, manual, is_private, zones, laps, streams,
+                raw_payload, notes_markdown
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+                $26, $27, $28, $29
+            )
+            RETURNING id, subject, activity_date, title, external_source,
+                      external_activity_id, athlete_id, sport_type,
+                      distance_meters, moving_time_seconds, elapsed_time_seconds,
+                      total_elevation_gain_meters, average_speed_mps, max_speed_mps,
+                      average_heartrate, max_heartrate, average_watts,
+                      weighted_average_watts, calories, kilojoules, suffer_score,
+                      trainer, commute, manual, is_private, zones, laps, streams,
+                      raw_payload, notes_markdown, created_at, updated_at
+            """,
+            subject,
+            _parse_iso_date(activity_date),
+            title,
+            external_source,
+            external_activity_id,
+            athlete_id,
+            sport_type,
+            distance_meters,
+            moving_time_seconds,
+            elapsed_time_seconds,
+            total_elevation_gain_meters,
+            average_speed_mps,
+            max_speed_mps,
+            average_heartrate,
+            max_heartrate,
+            average_watts,
+            weighted_average_watts,
+            calories,
+            kilojoules,
+            suffer_score,
+            trainer,
+            commute,
+            manual,
+            is_private,
+            _jsonb_value(zones),
+            _jsonb_value(laps),
+            _jsonb_value(streams),
+            _jsonb_value(raw_payload),
+            notes_markdown,
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for activity_entries.",
+        )
+
+    async def update_activity(
+        self,
+        subject: str,
+        activity_id: int,
+        activity_date: str,
+        title: str,
+        external_source: str | None = None,
+        external_activity_id: str | None = None,
+        athlete_id: str | None = None,
+        sport_type: str | None = None,
+        distance_meters: float | None = None,
+        moving_time_seconds: int | None = None,
+        elapsed_time_seconds: int | None = None,
+        total_elevation_gain_meters: float | None = None,
+        average_speed_mps: float | None = None,
+        max_speed_mps: float | None = None,
+        average_heartrate: float | None = None,
+        max_heartrate: float | None = None,
+        average_watts: float | None = None,
+        weighted_average_watts: float | None = None,
+        calories: float | None = None,
+        kilojoules: float | None = None,
+        suffer_score: float | None = None,
+        trainer: bool = False,
+        commute: bool = False,
+        manual: bool = True,
+        is_private: bool = False,
+        zones: dict[str, object] | None = None,
+        laps: list[dict[str, object]] | None = None,
+        streams: dict[str, object] | None = None,
+        raw_payload: dict[str, object] | None = None,
+        notes_markdown: str = "",
+    ) -> dict[str, object] | None:
+        """Replace one activity entry owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            activity_id: Activity identifier to update.
+            activity_date: Replacement ISO calendar date.
+            title: Replacement activity title.
+            external_source: Replacement sync source.
+            external_activity_id: Replacement upstream activity id.
+            athlete_id: Replacement upstream athlete id.
+            sport_type: Replacement activity type.
+            distance_meters: Replacement distance.
+            moving_time_seconds: Replacement moving time.
+            elapsed_time_seconds: Replacement elapsed time.
+            total_elevation_gain_meters: Replacement elevation gain.
+            average_speed_mps: Replacement average speed.
+            max_speed_mps: Replacement max speed.
+            average_heartrate: Replacement average heart rate.
+            max_heartrate: Replacement max heart rate.
+            average_watts: Replacement average power.
+            weighted_average_watts: Replacement weighted average power.
+            calories: Replacement calories burned.
+            kilojoules: Replacement kilojoules.
+            suffer_score: Replacement training-load marker.
+            trainer: Replacement trainer flag.
+            commute: Replacement commute flag.
+            manual: Replacement manual-entry flag.
+            is_private: Replacement privacy flag.
+            zones: Replacement zones payload.
+            laps: Replacement laps payload.
+            streams: Replacement streams payload.
+            raw_payload: Replacement raw payload.
+            notes_markdown: Replacement freeform notes.
+
+        Returns:
+            dict[str, object] | None: Updated activity row, or `None` when
+                missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the update fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            UPDATE activity_entries
+            SET
+                activity_date = $3,
+                title = $4,
+                external_source = $5,
+                external_activity_id = $6,
+                athlete_id = $7,
+                sport_type = $8,
+                distance_meters = $9,
+                moving_time_seconds = $10,
+                elapsed_time_seconds = $11,
+                total_elevation_gain_meters = $12,
+                average_speed_mps = $13,
+                max_speed_mps = $14,
+                average_heartrate = $15,
+                max_heartrate = $16,
+                average_watts = $17,
+                weighted_average_watts = $18,
+                calories = $19,
+                kilojoules = $20,
+                suffer_score = $21,
+                trainer = $22,
+                commute = $23,
+                manual = $24,
+                is_private = $25,
+                zones = $26,
+                laps = $27,
+                streams = $28,
+                raw_payload = $29,
+                notes_markdown = $30,
+                updated_at = NOW()
+            WHERE subject = $1 AND id = $2
+            RETURNING id, subject, activity_date, title, external_source,
+                      external_activity_id, athlete_id, sport_type,
+                      distance_meters, moving_time_seconds, elapsed_time_seconds,
+                      total_elevation_gain_meters, average_speed_mps, max_speed_mps,
+                      average_heartrate, max_heartrate, average_watts,
+                      weighted_average_watts, calories, kilojoules, suffer_score,
+                      trainer, commute, manual, is_private, zones, laps, streams,
+                      raw_payload, notes_markdown, created_at, updated_at
+            """,
+            subject,
+            activity_id,
+            _parse_iso_date(activity_date),
+            title,
+            external_source,
+            external_activity_id,
+            athlete_id,
+            sport_type,
+            distance_meters,
+            moving_time_seconds,
+            elapsed_time_seconds,
+            total_elevation_gain_meters,
+            average_speed_mps,
+            max_speed_mps,
+            average_heartrate,
+            max_heartrate,
+            average_watts,
+            weighted_average_watts,
+            calories,
+            kilojoules,
+            suffer_score,
+            trainer,
+            commute,
+            manual,
+            is_private,
+            _jsonb_value(zones),
+            _jsonb_value(laps),
+            _jsonb_value(streams),
+            _jsonb_value(raw_payload),
+            notes_markdown,
+        )
+        return self._row_to_dict(row)
+
+    async def delete_activity(
+        self,
+        subject: str,
+        activity_id: int,
+    ) -> dict[str, object]:
+        """Delete one activity entry owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            activity_id: Activity identifier to delete.
+
+        Returns:
+            dict[str, object]: Deletion result with the activity id.
+
+        Raises:
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        command = await self._execute(
+            "DELETE FROM activity_entries WHERE subject = $1 AND id = $2",
+            subject,
+            activity_id,
+        )
+        return {"deleted": command != "DELETE 0", "activity_id": activity_id}
+
+    async def list_memory_items(
+        self,
+        subject: str,
+        category: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List long-term memory items for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            category: Optional category filter.
+
+        Returns:
+            list[dict[str, object]]: Memory item rows ordered by recency.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        if category is None:
+            rows = await self._fetch(
+                """
+                SELECT id, subject, title, category, content_markdown,
+                       created_at, updated_at
+                FROM memory_items
+                WHERE subject = $1
+                ORDER BY created_at DESC, id DESC
+                """,
+                subject,
+            )
+            return self._rows_to_dicts(rows)
+
+        rows = await self._fetch(
+            """
+            SELECT id, subject, title, category, content_markdown,
+                   created_at, updated_at
+            FROM memory_items
+            WHERE subject = $1 AND category = $2
+            ORDER BY created_at DESC, id DESC
+            """,
+            subject,
+            category,
+        )
+        return self._rows_to_dicts(rows)
+
+    async def get_memory_item(
+        self,
+        subject: str,
+        memory_item_id: int,
+    ) -> dict[str, object] | None:
+        """Read one long-term memory item owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            memory_item_id: Memory-item identifier to fetch.
+
+        Returns:
+            dict[str, object] | None: Memory row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT id, subject, title, category, content_markdown,
+                   created_at, updated_at
+            FROM memory_items
+            WHERE subject = $1 AND id = $2
+            """,
+            subject,
+            memory_item_id,
+        )
+        return self._row_to_dict(row)
+
+    async def add_memory_item(
+        self,
+        subject: str,
+        title: str,
+        content_markdown: str,
+        category: str | None = None,
+    ) -> dict[str, object]:
+        """Create one long-term memory item for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            title: Short title for the memory entry.
+            content_markdown: Main markdown content to remember.
+            category: Optional category or tag.
+
+        Returns:
+            dict[str, object]: Newly created memory row.
+
+        Raises:
+            Exception: Propagated from asyncpg when the insert fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO memory_items (subject, title, category, content_markdown)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, subject, title, category, content_markdown,
+                      created_at, updated_at
+            """,
+            subject,
+            title,
+            category,
+            content_markdown,
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for memory_items.",
+        )
+
+    async def update_memory_item(
+        self,
+        subject: str,
+        memory_item_id: int,
+        title: str,
+        content_markdown: str,
+        category: str | None = None,
+    ) -> dict[str, object] | None:
+        """Replace one long-term memory item owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            memory_item_id: Memory-item identifier to update.
+            title: Replacement title.
+            content_markdown: Replacement markdown content.
+            category: Replacement category or tag.
+
+        Returns:
+            dict[str, object] | None: Updated memory row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the update fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            UPDATE memory_items
+            SET
+                title = $3,
+                category = $4,
+                content_markdown = $5,
+                updated_at = NOW()
+            WHERE subject = $1 AND id = $2
+            RETURNING id, subject, title, category, content_markdown,
+                      created_at, updated_at
+            """,
+            subject,
+            memory_item_id,
+            title,
+            category,
+            content_markdown,
+        )
+        return self._row_to_dict(row)
+
+    async def delete_memory_item(
+        self,
+        subject: str,
+        memory_item_id: int,
+    ) -> dict[str, object]:
+        """Delete one long-term memory item owned by a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            memory_item_id: Memory-item identifier to delete.
+
+        Returns:
+            dict[str, object]: Deletion result with the memory-item id.
+
+        Raises:
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        command = await self._execute(
+            "DELETE FROM memory_items WHERE subject = $1 AND id = $2",
+            subject,
+            memory_item_id,
+        )
+        return {"deleted": command != "DELETE 0", "memory_item_id": memory_item_id}
+
+    async def get_daily_summary(
+        self,
+        subject: str,
+        target_date: str,
+    ) -> dict[str, object]:
+        """Compute the daily target-vs-actual summary for one date.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            target_date: ISO calendar date to summarize.
+
+        Returns:
+            dict[str, object]: Combined target, actual, and count fields.
+
+        Raises:
+            Exception: Propagated from asyncpg when the summary queries fail.
+        """
+
+        parsed_date = _parse_iso_date(target_date)
+
+        target_row = await self._fetchrow(
+            """
+            SELECT target_food_calories, target_exercise_calories,
+                   target_protein_g, target_carbs_g, target_fat_g
+            FROM daily_targets
+            WHERE subject = $1 AND target_date = $2
+            """,
+            subject,
+            parsed_date,
+        )
+        meal_row = await self._fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(mi.calories), 0) AS actual_food_calories,
+                COALESCE(SUM(mi.protein_g), 0) AS actual_protein_g,
+                COALESCE(SUM(mi.carbs_g), 0) AS actual_carbs_g,
+                COALESCE(SUM(mi.fat_g), 0) AS actual_fat_g,
+                COUNT(DISTINCT dm.id)::INTEGER AS meals_count,
+                COUNT(mi.id)::INTEGER AS meal_items_count
+            FROM daily_meals dm
+            LEFT JOIN meal_items mi
+                ON mi.subject = dm.subject AND mi.meal_id = dm.id
+            WHERE dm.subject = $1 AND dm.meal_date = $2
+            """,
+            subject,
+            parsed_date,
+        )
+        activity_row = await self._fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(COALESCE(calories, 0)), 0) AS actual_exercise_calories,
+                COUNT(id)::INTEGER AS activities_count
+            FROM activity_entries
+            WHERE subject = $1 AND activity_date = $2
+            """,
+            subject,
+            parsed_date,
+        )
+
+        actual_food_calories = _as_float(meal_row["actual_food_calories"]) or 0.0
+        actual_exercise_calories = (
+            _as_float(activity_row["actual_exercise_calories"]) or 0.0
+        )
+
+        return {
+            "target_date": parsed_date.isoformat(),
+            "target_food_calories": _nullable_record_value(
+                target_row,
+                "target_food_calories",
+            ),
+            "target_exercise_calories": _nullable_record_value(
+                target_row,
+                "target_exercise_calories",
+            ),
+            "target_protein_g": _nullable_record_value(target_row, "target_protein_g"),
+            "target_carbs_g": _nullable_record_value(target_row, "target_carbs_g"),
+            "target_fat_g": _nullable_record_value(target_row, "target_fat_g"),
+            "actual_food_calories": actual_food_calories,
+            "actual_exercise_calories": actual_exercise_calories,
+            "actual_protein_g": _as_float(meal_row["actual_protein_g"]) or 0.0,
+            "actual_carbs_g": _as_float(meal_row["actual_carbs_g"]) or 0.0,
+            "actual_fat_g": _as_float(meal_row["actual_fat_g"]) or 0.0,
+            # Net calories remain easy to explain to the agent: food in minus
+            # exercise out for the selected business date.
+            "net_calories": round(actual_food_calories - actual_exercise_calories, 2),
+            "meals_count": _as_int(meal_row["meals_count"]) or 0,
+            "meal_items_count": _as_int(meal_row["meal_items_count"]) or 0,
+            "activities_count": _as_int(activity_row["activities_count"]) or 0,
+        }
 
     async def close(self) -> None:
         """Release the asyncpg pool when tests or scripts are finished.
@@ -344,13 +2322,13 @@ class PostgresUserStore(UserStore):
 
         Parameters:
             query: SQL statement to execute.
-            *args: Positional query parameters.
+            *args: Positional SQL parameters.
 
         Returns:
-            str: asyncpg command tag returned by the executed statement.
+            str: asyncpg command tag returned by the write statement.
 
         Raises:
-            Exception: Propagated from asyncpg when the statement fails.
+            Exception: Propagated from asyncpg when the write fails.
         """
 
         pool = await self._ensure_pool()
@@ -362,22 +2340,40 @@ class PostgresUserStore(UserStore):
         query: str,
         *args: object,
     ) -> asyncpg.Record | None:
-        """Run a read query after ensuring the pool and schema exist.
+        """Run a read query and return the first matching row.
 
         Parameters:
             query: SQL statement to execute.
-            *args: Positional query parameters.
+            *args: Positional SQL parameters.
 
         Returns:
             asyncpg.Record | None: First matching row, or `None` when missing.
 
         Raises:
-            Exception: Propagated from asyncpg when the statement fails.
+            Exception: Propagated from asyncpg when the query fails.
         """
 
         pool = await self._ensure_pool()
         async with pool.acquire() as connection:
             return await connection.fetchrow(query, *args)
+
+    async def _fetch(self, query: str, *args: object) -> list[asyncpg.Record]:
+        """Run a read query and return all matching rows.
+
+        Parameters:
+            query: SQL statement to execute.
+            *args: Positional SQL parameters.
+
+        Returns:
+            list[asyncpg.Record]: All matching rows from the database.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        pool = await self._ensure_pool()
+        async with pool.acquire() as connection:
+            return list(await connection.fetch(query, *args))
 
     async def _ensure_pool(self) -> asyncpg.Pool:
         """Create the asyncpg pool and bootstrap the schema on first use.
@@ -404,18 +2400,315 @@ class PostgresUserStore(UserStore):
                     command_timeout=30,
                     # Supabase recommends a pooler connection for serverless
                     # platforms such as Vercel. Disabling asyncpg's statement
-                    # cache keeps the app compatible with transaction poolers,
-                    # which do not support prepared statements reliably.
+                    # cache keeps the app compatible with transaction poolers.
                     statement_cache_size=0,
                 )
 
-                # Remote environments such as Vercel do not run the Docker init
-                # script, so we keep the bootstrap SQL here as well. The schema
-                # is intentionally tiny, so this stays easy to reason about.
+                # Remote environments do not run the Docker init script, so the
+                # application keeps an additive schema bootstrap here as well.
                 async with self._pool.acquire() as connection:
                     await connection.execute(self.schema_sql)
 
         return self._pool
+
+    async def _get_markdown_document(self, subject: str, column: str) -> str:
+        """Read one markdown document column from the singleton user row.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            column: Whitelisted markdown column name to fetch.
+
+        Returns:
+            str: Stored markdown, or an empty string when missing.
+
+        Raises:
+            ValueError: If the requested document column is not whitelisted.
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        if column not in _DOCUMENT_COLUMNS:
+            raise ValueError(f"Unsupported markdown document column: {column}")
+
+        row = await self._fetchrow(
+            f"SELECT {column} FROM user_profiles WHERE subject = $1",
+            subject,
+        )
+        if row is None:
+            return ""
+        return str(row[column] or "")
+
+    async def _upsert_user_profile_fields(
+        self,
+        subject: str,
+        login: str | None,
+        fields: dict[str, object],
+    ) -> None:
+        """Upsert selected columns on the singleton `user_profiles` row.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            login: Optional friendly login captured from the auth layer.
+            fields: Column-value mapping to store on the singleton row.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If an unexpected column is supplied.
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        allowed_columns = {
+            "profile_markdown",
+            "diet_preferences_markdown",
+            "diet_goals_markdown",
+            "training_goals_markdown",
+            "weight_kg",
+            "height_cm",
+            "ftp_watts",
+        }
+        invalid_columns = set(fields) - allowed_columns
+        if invalid_columns:
+            raise ValueError(
+                "Unsupported user_profiles columns: "
+                + ", ".join(sorted(invalid_columns))
+            )
+
+        insert_columns = ["subject", "login", *fields.keys()]
+        insert_values = [subject, login, *fields.values()]
+        placeholders = ", ".join(
+            f"${index}" for index in range(1, len(insert_values) + 1)
+        )
+        updates = [
+            "login = COALESCE(EXCLUDED.login, user_profiles.login)",
+            *[f"{column} = EXCLUDED.{column}" for column in fields],
+            "updated_at = NOW()",
+        ]
+
+        await self._execute(
+            f"""
+            INSERT INTO user_profiles ({", ".join(insert_columns)})
+            VALUES ({placeholders})
+            ON CONFLICT (subject) DO UPDATE
+            SET {", ".join(updates)}
+            """,
+            *insert_values,
+        )
+
+    async def _fetch_product_record(
+        self,
+        subject: str,
+        product_id: int,
+    ) -> asyncpg.Record:
+        """Load one product record and fail clearly when it is missing.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            product_id: Product identifier expected to belong to the subject.
+
+        Returns:
+            asyncpg.Record: Product row used for nutrition snapshotting.
+
+        Raises:
+            RuntimeError: If the product does not belong to the subject.
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT id, name, calories_per_100g, carbs_g_per_100g,
+                   protein_g_per_100g, fat_g_per_100g
+            FROM food_products
+            WHERE subject = $1 AND id = $2
+            """,
+            subject,
+            product_id,
+        )
+        if row is None:
+            raise RuntimeError(
+                f"Food product {product_id} was not found for the current user."
+            )
+        return row
+
+    async def _fetch_meal(
+        self,
+        subject: str,
+        meal_id: int,
+    ) -> asyncpg.Record | None:
+        """Load one meal header row for the current subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Meal identifier to fetch.
+
+        Returns:
+            asyncpg.Record | None: Meal row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        return await self._fetchrow(
+            """
+            SELECT id, subject, meal_date, meal_label, notes_markdown,
+                   created_at, updated_at
+            FROM daily_meals
+            WHERE subject = $1 AND id = $2
+            """,
+            subject,
+            meal_id,
+        )
+
+    async def _require_meal(self, subject: str, meal_id: int) -> asyncpg.Record:
+        """Load one meal header and fail clearly when it is missing.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Meal identifier expected to belong to the subject.
+
+        Returns:
+            asyncpg.Record: Meal row owned by the current subject.
+
+        Raises:
+            RuntimeError: If the meal does not belong to the subject.
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetch_meal(subject, meal_id)
+        if row is None:
+            raise RuntimeError(f"Meal {meal_id} was not found for the current user.")
+        return row
+
+    async def _build_meal_item_snapshot(
+        self,
+        subject: str,
+        product_id: int | None,
+        ingredient_name: str | None,
+        grams: float,
+        calories: float | None,
+        carbs_g: float | None,
+        protein_g: float | None,
+        fat_g: float | None,
+    ) -> dict[str, object]:
+        """Build the stored nutrition snapshot for a meal item.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            product_id: Optional catalog product used for auto-calculation.
+            ingredient_name: Free-text ingredient name for manual items or
+                optional label override for catalog items.
+            grams: Consumed grams used for nutrient scaling.
+            calories: Manual calories for non-catalog items.
+            carbs_g: Manual carbohydrate grams for non-catalog items.
+            protein_g: Manual protein grams for non-catalog items.
+            fat_g: Manual fat grams for non-catalog items.
+
+        Returns:
+            dict[str, object]: Snapshot fields ready for insertion or update.
+
+        Raises:
+            RuntimeError: If the referenced product is invalid.
+            ValueError: If the provided values do not satisfy the snapshot rules.
+            Exception: Propagated from asyncpg when product lookups fail.
+        """
+
+        if grams <= 0:
+            raise ValueError("grams must be greater than 0.")
+
+        if product_id is not None:
+            product_row = await self._fetch_product_record(subject, product_id)
+            resolved_name = ingredient_name.strip() if ingredient_name else ""
+            if not resolved_name:
+                resolved_name = str(product_row["name"])
+
+            # Historical meal items must keep the nutrient snapshot that was
+            # true when they were logged, even if the product is edited later.
+            return {
+                "ingredient_name": resolved_name,
+                "calories": _scaled_metric(product_row["calories_per_100g"], grams),
+                "carbs_g": _scaled_metric(product_row["carbs_g_per_100g"], grams),
+                "protein_g": _scaled_metric(product_row["protein_g_per_100g"], grams),
+                "fat_g": _scaled_metric(product_row["fat_g_per_100g"], grams),
+            }
+
+        if ingredient_name is None or not ingredient_name.strip():
+            raise ValueError(
+                "ingredient_name is required when product_id is not provided."
+            )
+        if None in {calories, carbs_g, protein_g, fat_g}:
+            raise ValueError(
+                "calories, carbs_g, protein_g, and fat_g are required "
+                "for manual meal items."
+            )
+
+        return {
+            "ingredient_name": ingredient_name.strip(),
+            "calories": round(float(calories), 2),
+            "carbs_g": round(float(carbs_g), 2),
+            "protein_g": round(float(protein_g), 2),
+            "fat_g": round(float(fat_g), 2),
+        }
+
+    def _row_to_dict(self, row: asyncpg.Record | None) -> dict[str, object] | None:
+        """Convert one asyncpg row into a JSON-safe dictionary.
+
+        Parameters:
+            row: Asyncpg row returned by the database.
+
+        Returns:
+            dict[str, object] | None: Serialized row, or `None` when missing.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+        if row is None:
+            return None
+
+        # Postgres returns JSONB columns as strings with the current asyncpg
+        # parameter strategy, so we normalize those fields back into native
+        # dict/list values before exposing them through MCP tools.
+        return {
+            key: _serialize_value(key, value) for key, value in dict(row).items()
+        }
+
+    def _rows_to_dicts(self, rows: list[asyncpg.Record]) -> list[dict[str, object]]:
+        """Convert multiple asyncpg rows into JSON-safe dictionaries.
+
+        Parameters:
+            rows: Asyncpg rows returned by the database.
+
+        Returns:
+            list[dict[str, object]]: Serialized rows ready for MCP responses.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+        return [self._require_row_dict(row, "Unexpected missing row.") for row in rows]
+
+    def _require_row_dict(
+        self,
+        row: asyncpg.Record | None,
+        message: str,
+    ) -> dict[str, object]:
+        """Convert a row to a dict and fail clearly when it is unexpectedly missing.
+
+        Parameters:
+            row: Asyncpg row expected to be present.
+            message: Error message raised when the row is missing.
+
+        Returns:
+            dict[str, object]: JSON-safe serialized row.
+
+        Raises:
+            RuntimeError: If the row is unexpectedly missing.
+        """
+
+        payload = self._row_to_dict(row)
+        if payload is None:
+            raise RuntimeError(message)
+        return payload
 
 
 def build_user_store(settings: Settings) -> UserStore:
@@ -428,17 +2721,108 @@ def build_user_store(settings: Settings) -> UserStore:
         UserStore: The Postgres storage backend used by the pilot.
 
     Raises:
-        RuntimeError: Propagated if the database URL is unexpectedly missing.
-
-    Example:
-        >>> isinstance(build_user_store(Settings.from_env()), UserStore)
-        True
+        RuntimeError: If the database URL is unexpectedly missing.
     """
 
     if settings.database_url is None:
         raise RuntimeError("DATABASE_URL must be validated before building the store.")
 
     return PostgresUserStore(database_url=settings.database_url)
+
+
+def _parse_iso_date(value: str) -> date:
+    """Parse an ISO date string used by the MCP tool surface.
+
+    Parameters:
+        value: ISO date string such as `2026-04-14`.
+
+    Returns:
+        date: Parsed calendar date.
+
+    Raises:
+        ValueError: If the input is not a valid ISO date string.
+    """
+
+    return date.fromisoformat(value)
+
+
+def _scaled_metric(per_100g: object, grams: float) -> float:
+    """Scale a per-100g nutrient value into a consumed-grams snapshot.
+
+    Parameters:
+        per_100g: Raw per-100g nutrient value from the product catalog.
+        grams: Consumed grams for the meal item.
+
+    Returns:
+        float: Rounded nutrient snapshot used for the meal item row.
+
+    Raises:
+        ValueError: If the value cannot be converted to a float.
+    """
+
+    return round(float(per_100g) * grams / 100.0, 2)
+
+
+def _serialize_value(key: str, value: object) -> object:
+    """Convert database-native values into JSON-safe response values.
+
+    Parameters:
+        key: Column name associated with the raw value.
+        value: Raw value returned by asyncpg.
+
+    Returns:
+        object: Serialized value ready for MCP responses.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if key in _JSON_COLUMNS and isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _jsonb_value(value: object | None) -> object | None:
+    """Wrap Python JSON-like values so asyncpg stores them as JSONB.
+
+    Parameters:
+        value: Optional Python dict, list, or scalar intended for a JSONB column.
+
+    Returns:
+        object | None: JSON string accepted by Postgres JSONB columns, or
+            `None` for null columns.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    if value is None:
+        return None
+    return json.dumps(value)
+
+
+def _nullable_record_value(
+    row: asyncpg.Record | None,
+    key: str,
+) -> float | None:
+    """Read one nullable float-like value from an optional record.
+
+    Parameters:
+        row: Optional record returned by asyncpg.
+        key: Column name to read.
+
+    Returns:
+        float | None: Converted float when present, otherwise `None`.
+
+    Raises:
+        ValueError: If the raw value cannot be converted to `float`.
+    """
+
+    if row is None or row[key] is None:
+        return None
+    return float(row[key])
 
 
 def _as_float(value: object | None) -> float | None:

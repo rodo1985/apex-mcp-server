@@ -35,7 +35,18 @@ That means production needs:
 DATABASE_URL=postgresql://user:password@host:5432/database
 ```
 
-The Postgres provider can be any managed or self-hosted service that exposes a normal connection string. This repo does not depend on a provider-specific SDK.
+The Postgres provider can be any managed or self-hosted service that exposes a
+normal connection string. This repo does not depend on a provider-specific SDK.
+
+The current schema includes:
+
+- `user_profiles`
+- `food_products`
+- `daily_targets`
+- `daily_meals`
+- `meal_items`
+- `activity_entries`
+- `memory_items`
 
 If you use Supabase, get the connection string from:
 
@@ -160,8 +171,17 @@ https://<your-stable-production-domain>/mcp
 - `whoami`
 - `set_profile`
 - `get_profile`
+- `set_diet_preferences`
+- `get_diet_preferences`
 - `set_user_data`
 - `get_user_data`
+- `add_product`
+- `set_daily_target`
+- `add_meal`
+- `add_meal_item`
+- `add_activity`
+- `add_memory_item`
+- `get_daily_summary`
 - `profile://me`
 - `use_profile`
 
@@ -178,7 +198,8 @@ Use this checklist when you want to make the Vercel deployment reachable by Clau
 7. Add the connector in `claude.ai`.
 8. Complete the OAuth flow.
 9. Call `whoami` first to confirm the remote identity is correct.
-10. Verify `set_profile`, `get_profile`, `set_user_data`, and `get_user_data` round-trip successfully.
+10. Verify at least one document write, one tabular write, and one collection
+    write round-trip successfully.
 
 ## Local development checklist
 

@@ -2,16 +2,18 @@
 
 ## Project context
 
-- This repository is a small FastMCP proof of concept for a private persona-profile server.
+- This repository is a small FastMCP proof of concept for a private wellness-profile server.
 - The product goal is a simple MCP server baseline that is easy to run locally and easy to deploy on Vercel or a VM.
 - The current auth model is:
   - `none` or one shared bearer token locally
   - WorkOS AuthKit OAuth for `claude.ai` production connections
-- The current storage model is one Postgres row per caller with:
-  - `profile_markdown`
-  - `weight_kg`
-  - `height_cm`
-  - `ftp_watts`
+- The current storage model is Postgres with:
+  - one singleton `user_profiles` row per caller
+  - food products
+  - daily targets
+  - daily meals and meal items
+  - activity entries
+  - memory items
 - Treat this repo as a hello-world style pilot. Avoid turning it into a larger platform unless the user explicitly asks for that.
 
 ## Repository expectations
@@ -33,8 +35,9 @@
 - Keep the reusable from-scratch deployment guide current in [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md) when WorkOS, Vercel, or Claude setup steps change.
 - Keep function, method, and class docstrings complete and practical.
 - Preserve the current product scope:
-  - one profile document
+  - singleton markdown profile and goals documents
   - one small set of numeric user fields
+  - food, daily-log, activity, and memory tables
   - Postgres as the only storage backend
   - simple local auth plus production OAuth
 - Run `make lint` and `make test` before finishing behavior changes.

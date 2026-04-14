@@ -1,8 +1,9 @@
-"""Integration tests for the Postgres-backed storage layer."""
+"""Integration tests for the Postgres-backed wellness storage layer."""
 
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -21,9 +22,6 @@ class _FakeConnection:
 
     Returns:
         _FakeConnection: Connection stub with an `execute` coroutine.
-
-    Raises:
-        This helper does not raise errors directly.
     """
 
     async def execute(self, query: str) -> str:
@@ -36,10 +34,12 @@ class _FakeConnection:
             str: Static asyncpg-like command tag.
 
         Raises:
-            AssertionError: If the store stops sending schema bootstrap SQL.
+            AssertionError: If schema bootstrap stops covering key tables.
         """
 
         assert "CREATE TABLE IF NOT EXISTS user_profiles" in query
+        assert "CREATE TABLE IF NOT EXISTS food_products" in query
+        assert "CREATE TABLE IF NOT EXISTS memory_items" in query
         return "EXECUTE"
 
 
@@ -51,9 +51,6 @@ class _FakeAcquireContext:
 
     Returns:
         _FakeAcquireContext: Context manager used by `_ensure_pool()`.
-
-    Raises:
-        This helper does not raise errors directly.
     """
 
     def __init__(self, connection: _FakeConnection) -> None:
@@ -64,9 +61,6 @@ class _FakeAcquireContext:
 
         Returns:
             None.
-
-        Raises:
-            This initializer does not raise errors directly.
         """
 
         self.connection = connection
@@ -79,9 +73,6 @@ class _FakeAcquireContext:
 
         Returns:
             _FakeConnection: The stub connection used by the test.
-
-        Raises:
-            This helper does not raise errors directly.
         """
 
         return self.connection
@@ -96,9 +87,6 @@ class _FakeAcquireContext:
 
         Returns:
             None.
-
-        Raises:
-            This helper does not raise errors directly.
         """
 
 
@@ -110,9 +98,6 @@ class _FakePool:
 
     Returns:
         _FakePool: Pool stub with `acquire()` and `close()` methods.
-
-    Raises:
-        This helper does not raise errors directly.
     """
 
     def __init__(self) -> None:
@@ -123,9 +108,6 @@ class _FakePool:
 
         Returns:
             None.
-
-        Raises:
-            This initializer does not raise errors directly.
         """
 
         self.connection = _FakeConnection()
@@ -138,9 +120,6 @@ class _FakePool:
 
         Returns:
             _FakeAcquireContext: Async context manager yielding a connection.
-
-        Raises:
-            This helper does not raise errors directly.
         """
 
         return _FakeAcquireContext(self.connection)
@@ -153,10 +132,20 @@ class _FakePool:
 
         Returns:
             None.
-
-        Raises:
-            This helper does not raise errors directly.
         """
+
+
+def make_subject(prefix: str) -> str:
+    """Return a unique subject string so integration tests stay isolated.
+
+    Parameters:
+        prefix: Human-readable prefix describing the test.
+
+    Returns:
+        str: Unique subject string safe to reuse in a shared database.
+    """
+
+    return f"{prefix}-{uuid4().hex[:12]}"
 
 
 @pytest.fixture
@@ -166,8 +155,8 @@ async def postgres_store() -> PostgresUserStore:
     Parameters:
         None.
 
-    Returns:
-        PostgresUserStore: Store instance connected to the configured test DB.
+        Returns:
+            PostgresUserStore: Store instance connected to the configured test DB.
 
     Raises:
         pytest.skip: When Postgres is not available for integration tests.
@@ -181,8 +170,7 @@ async def postgres_store() -> PostgresUserStore:
     store = PostgresUserStore(database_url=database_url)
 
     try:
-        # Touch the database once so we can skip cleanly when Docker is not up.
-        await store.get_profile("healthcheck-subject")
+        await store.get_profile("healthcheck-subject-v2")
     except (OSError, asyncpg.PostgresError) as exc:
         await store.close()
         pytest.skip(f"Postgres integration database is unavailable: {exc}")
@@ -194,124 +182,654 @@ async def postgres_store() -> PostgresUserStore:
 
 
 @pytest.mark.asyncio
-async def test_postgres_store_returns_empty_profile_when_missing(
+async def test_postgres_store_keeps_existing_profile_and_user_data_behavior(
     postgres_store: PostgresUserStore,
 ) -> None:
-    """Ensure a missing profile returns an empty markdown string.
+    """Ensure singleton documents extend the baseline without breaking v1 data.
 
     Parameters:
         postgres_store: Connected Postgres user store.
 
     Returns:
         None.
-
-    Raises:
-        AssertionError: If missing profiles stop returning an empty string.
     """
 
-    loaded_profile = await postgres_store.get_profile(
-        "test-missing-profile-subject-v1"
-    )
-
-    assert loaded_profile == ""
-
-
-@pytest.mark.asyncio
-async def test_postgres_store_profile_round_trip(
-    postgres_store: PostgresUserStore,
-) -> None:
-    """Ensure the Postgres store can write and read markdown profiles.
-
-    Parameters:
-        postgres_store: Connected Postgres user store.
-
-    Returns:
-        None.
-
-    Raises:
-        AssertionError: If the profile round trip does not match expectations.
-    """
-
-    subject = "test-profile-round-trip-subject-v1"
-    save_result = await postgres_store.set_profile(
-        subject,
-        "# Persona\nHelpful",
-        login="sergio",
-    )
-    loaded_profile = await postgres_store.get_profile(subject)
-
-    assert save_result.saved is True
-    assert save_result.subject == subject
-    assert save_result.bytes == len(b"# Persona\nHelpful")
-    assert loaded_profile == "# Persona\nHelpful"
-
-
-@pytest.mark.asyncio
-async def test_postgres_store_user_data_round_trip(
-    postgres_store: PostgresUserStore,
-) -> None:
-    """Ensure the Postgres store can write and read numeric user data.
-
-    Parameters:
-        postgres_store: Connected Postgres user store.
-
-    Returns:
-        None.
-
-    Raises:
-        AssertionError: If the user-data round trip does not match expectations.
-    """
-
-    subject = "test-user-data-round-trip-subject-v1"
-    result = await postgres_store.set_user_data(
+    subject = make_subject("singleton")
+    await postgres_store.set_profile(subject, "# Persona\nHelpful", login="sergio")
+    await postgres_store.set_user_data(
         subject,
         UserData(weight_kg=68.5, height_cm=174.0, ftp_watts=250),
         login="sergio",
     )
-    loaded_data = await postgres_store.get_user_data(subject)
+    diet_preferences = await postgres_store.set_diet_preferences(
+        subject,
+        "Prefer Mediterranean-style meals.",
+        login="sergio",
+    )
+    diet_goals = await postgres_store.set_diet_goals(
+        subject,
+        "Maintain a mild daily calorie deficit.",
+        login="sergio",
+    )
+    training_goals = await postgres_store.set_training_goals(
+        subject,
+        "Keep long rides and quality running sessions consistent.",
+        login="sergio",
+    )
 
-    assert result.saved is True
-    assert result.subject == subject
-    assert loaded_data.as_dict() == {
+    loaded_profile = await postgres_store.get_profile(subject)
+    loaded_user_data = await postgres_store.get_user_data(subject)
+    loaded_diet_preferences = await postgres_store.get_diet_preferences(subject)
+    loaded_diet_goals = await postgres_store.get_diet_goals(subject)
+    loaded_training_goals = await postgres_store.get_training_goals(subject)
+
+    assert loaded_profile == "# Persona\nHelpful"
+    assert loaded_user_data.as_dict() == {
         "weight_kg": 68.5,
         "height_cm": 174.0,
         "ftp_watts": 250,
     }
+    assert loaded_diet_preferences == "Prefer Mediterranean-style meals."
+    assert loaded_diet_goals == "Maintain a mild daily calorie deficit."
+    assert (
+        loaded_training_goals
+        == "Keep long rides and quality running sessions consistent."
+    )
+    assert diet_preferences.saved is True
+    assert diet_goals.saved is True
+    assert training_goals.saved is True
 
 
 @pytest.mark.asyncio
-async def test_postgres_store_updates_user_data_without_erasing_profile(
+async def test_postgres_store_products_support_crud_and_unique_names(
     postgres_store: PostgresUserStore,
 ) -> None:
-    """Ensure markdown and numeric fields can evolve independently.
+    """Ensure the product catalog supports CRUD and per-user unique names.
 
     Parameters:
         postgres_store: Connected Postgres user store.
 
     Returns:
         None.
-
-    Raises:
-        AssertionError: If writing one field set erases the other.
     """
 
-    subject = "test-independent-updates-subject-v1"
-    await postgres_store.set_profile(subject, "# Persona\nStill here", login="sergio")
-    await postgres_store.set_user_data(
+    subject = make_subject("products")
+    other_subject = make_subject("products-other")
+
+    product = await postgres_store.add_product(
         subject,
-        UserData(weight_kg=70.0, height_cm=175.0, ftp_watts=255),
-        login="sergio",
+        name="Oats",
+        default_serving_g=60.0,
+        calories_per_100g=389.0,
+        carbs_g_per_100g=66.0,
+        protein_g_per_100g=17.0,
+        fat_g_per_100g=7.0,
+        notes_markdown="Breakfast staple",
+    )
+    listed_products = await postgres_store.list_products(subject)
+    loaded_product = await postgres_store.get_product(subject, int(product["id"]))
+    updated_product = await postgres_store.update_product(
+        subject,
+        product_id=int(product["id"]),
+        name="Rolled oats",
+        default_serving_g=70.0,
+        calories_per_100g=389.0,
+        carbs_g_per_100g=66.0,
+        protein_g_per_100g=17.0,
+        fat_g_per_100g=7.0,
+        notes_markdown="Updated",
     )
 
-    profile = await postgres_store.get_profile(subject)
-    user_data = await postgres_store.get_user_data(subject)
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await postgres_store.add_product(
+            subject,
+            name="Rolled oats",
+            default_serving_g=50.0,
+            calories_per_100g=300.0,
+            carbs_g_per_100g=50.0,
+            protein_g_per_100g=10.0,
+            fat_g_per_100g=4.0,
+        )
 
-    assert profile == "# Persona\nStill here"
-    assert user_data.as_dict() == {
-        "weight_kg": 70.0,
-        "height_cm": 175.0,
-        "ftp_watts": 255,
+    other_product = await postgres_store.add_product(
+        other_subject,
+        name="Rolled oats",
+        default_serving_g=None,
+        calories_per_100g=389.0,
+        carbs_g_per_100g=66.0,
+        protein_g_per_100g=17.0,
+        fat_g_per_100g=7.0,
+    )
+    foreign_lookup = await postgres_store.get_product(other_subject, int(product["id"]))
+    delete_result = await postgres_store.delete_product(subject, int(product["id"]))
+
+    assert product["name"] == "Oats"
+    assert listed_products[0]["id"] == product["id"]
+    assert loaded_product is not None and loaded_product["name"] == "Oats"
+    assert updated_product is not None and updated_product["name"] == "Rolled oats"
+    assert other_product["name"] == "Rolled oats"
+    assert foreign_lookup is None
+    assert delete_result == {"deleted": True, "product_id": int(product["id"])}
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_daily_targets_are_upserted_per_user_and_day(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure one user/day pair maps to one target row with upsert semantics.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("targets")
+
+    first = await postgres_store.set_daily_target(
+        subject,
+        target_date="2026-04-14",
+        target_food_calories=2200.0,
+        target_exercise_calories=500.0,
+        target_protein_g=150.0,
+        target_carbs_g=250.0,
+        target_fat_g=60.0,
+        notes_markdown="Base plan",
+    )
+    second = await postgres_store.set_daily_target(
+        subject,
+        target_date="2026-04-14",
+        target_food_calories=2300.0,
+        target_exercise_calories=650.0,
+        target_protein_g=155.0,
+        target_carbs_g=275.0,
+        target_fat_g=62.0,
+        notes_markdown="Long ride adjustment",
+    )
+
+    listed_targets = await postgres_store.list_daily_targets(subject)
+    loaded_target = await postgres_store.get_daily_target(subject, "2026-04-14")
+
+    assert first["id"] == second["id"]
+    assert len(listed_targets) == 1
+    assert loaded_target is not None
+    assert loaded_target["target_food_calories"] == 2300.0
+    assert loaded_target["target_exercise_calories"] == 650.0
+    assert loaded_target["notes_markdown"] == "Long ride adjustment"
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_meals_and_items_keep_historical_nutrition_snapshots(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure meal items snapshot product nutrition instead of live-linking it.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("meals")
+
+    product = await postgres_store.add_product(
+        subject,
+        name="Oats",
+        default_serving_g=60.0,
+        calories_per_100g=389.0,
+        carbs_g_per_100g=66.0,
+        protein_g_per_100g=17.0,
+        fat_g_per_100g=7.0,
+        notes_markdown="Breakfast staple",
+    )
+    meal = await postgres_store.add_meal(
+        subject,
+        meal_date="2026-04-14",
+        meal_label="Breakfast",
+        notes_markdown="Pre-ride meal",
+    )
+    meal_item = await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(meal["id"]),
+        product_id=int(product["id"]),
+        grams=80.0,
+    )
+    manual_item = await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(meal["id"]),
+        grams=30.0,
+        ingredient_name="Honey",
+        calories=91.0,
+        carbs_g=24.0,
+        protein_g=0.0,
+        fat_g=0.0,
+    )
+
+    await postgres_store.update_product(
+        subject,
+        product_id=int(product["id"]),
+        name="Oats updated",
+        default_serving_g=70.0,
+        calories_per_100g=450.0,
+        carbs_g_per_100g=70.0,
+        protein_g_per_100g=20.0,
+        fat_g_per_100g=8.0,
+        notes_markdown="Changed nutrition",
+    )
+    loaded_meal = await postgres_store.get_meal(subject, int(meal["id"]))
+    updated_meal = await postgres_store.update_meal(
+        subject,
+        meal_id=int(meal["id"]),
+        meal_date="2026-04-14",
+        meal_label="Breakfast updated",
+        notes_markdown="Updated notes",
+    )
+    listed_items_before = await postgres_store.list_meal_items(subject, int(meal["id"]))
+    updated_manual_item = await postgres_store.update_meal_item(
+        subject,
+        meal_item_id=int(manual_item["id"]),
+        meal_id=int(meal["id"]),
+        grams=35.0,
+        ingredient_name="Honey updated",
+        calories=110.0,
+        carbs_g=28.0,
+        protein_g=0.0,
+        fat_g=0.0,
+    )
+    deleted_manual_item = await postgres_store.delete_meal_item(
+        subject,
+        int(manual_item["id"]),
+    )
+    deleted_meal = await postgres_store.delete_meal(subject, int(meal["id"]))
+
+    assert loaded_meal is not None and loaded_meal["meal_label"] == "Breakfast"
+    assert (
+        updated_meal is not None
+        and updated_meal["meal_label"] == "Breakfast updated"
+    )
+    assert meal_item["ingredient_name"] == "Oats"
+    assert meal_item["calories"] == 311.2
+    assert meal_item["carbs_g"] == 52.8
+    assert meal_item["protein_g"] == 13.6
+    assert meal_item["fat_g"] == 5.6
+    assert len(listed_items_before) == 2
+    assert listed_items_before[0]["calories"] == 311.2
+    assert updated_manual_item is not None
+    assert updated_manual_item["ingredient_name"] == "Honey updated"
+    assert updated_manual_item["grams"] == 35.0
+    assert deleted_manual_item == {
+        "deleted": True,
+        "meal_item_id": int(manual_item["id"]),
     }
+    assert deleted_meal == {"deleted": True, "meal_id": int(meal["id"])}
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_activities_support_json_and_external_uniqueness(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure activity entries support CRUD, JSON fields, and sync uniqueness.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("activities")
+    other_subject = make_subject("activities-other")
+
+    activity = await postgres_store.add_activity(
+        subject,
+        activity_date="2026-04-14",
+        title="Morning ride",
+        external_source="strava",
+        external_activity_id="ride-1",
+        athlete_id="athlete-1",
+        sport_type="Ride",
+        distance_meters=54000.0,
+        moving_time_seconds=7200,
+        elapsed_time_seconds=7600,
+        total_elevation_gain_meters=850.0,
+        average_speed_mps=7.5,
+        max_speed_mps=15.0,
+        average_heartrate=138.0,
+        max_heartrate=176.0,
+        average_watts=210.0,
+        weighted_average_watts=225.0,
+        calories=700.0,
+        kilojoules=1500.0,
+        suffer_score=110.0,
+        trainer=False,
+        commute=False,
+        manual=False,
+        is_private=False,
+        zones={"z2": 80},
+        laps=[{"lap": 1, "seconds": 600}],
+        streams={"heartrate": [120, 130]},
+        raw_payload={"provider": "demo"},
+        notes_markdown="Imported from sync",
+    )
+    loaded_activity = await postgres_store.get_activity(subject, int(activity["id"]))
+    listed_activities = await postgres_store.list_activities(
+        subject,
+        date_from="2026-04-14",
+        date_to="2026-04-14",
+        external_source="strava",
+    )
+    updated_activity = await postgres_store.update_activity(
+        subject,
+        activity_id=int(activity["id"]),
+        activity_date="2026-04-14",
+        title="Morning ride updated",
+        external_source="strava",
+        external_activity_id="ride-1",
+        athlete_id="athlete-1",
+        sport_type="Ride",
+        distance_meters=55000.0,
+        moving_time_seconds=7100,
+        elapsed_time_seconds=7500,
+        total_elevation_gain_meters=875.0,
+        average_speed_mps=7.7,
+        max_speed_mps=15.4,
+        average_heartrate=140.0,
+        max_heartrate=177.0,
+        average_watts=215.0,
+        weighted_average_watts=230.0,
+        calories=720.0,
+        kilojoules=1520.0,
+        suffer_score=112.0,
+        trainer=False,
+        commute=False,
+        manual=False,
+        is_private=False,
+        zones={"z2": 90},
+        laps=[{"lap": 1, "seconds": 580}],
+        streams={"heartrate": [122, 132]},
+        raw_payload={"provider": "demo", "updated": True},
+        notes_markdown="Updated from sync",
+    )
+
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await postgres_store.add_activity(
+            subject,
+            activity_date="2026-04-14",
+            title="Duplicate ride",
+            external_source="strava",
+            external_activity_id="ride-1",
+        )
+
+    other_subject_activity = await postgres_store.add_activity(
+        other_subject,
+        activity_date="2026-04-14",
+        title="Other user's ride",
+        external_source="strava",
+        external_activity_id="ride-1",
+    )
+    delete_result = await postgres_store.delete_activity(subject, int(activity["id"]))
+
+    assert loaded_activity is not None
+    assert loaded_activity["zones"] == {"z2": 80}
+    assert listed_activities[0]["title"] == "Morning ride"
+    assert updated_activity is not None
+    assert updated_activity["title"] == "Morning ride updated"
+    assert updated_activity["raw_payload"] == {"provider": "demo", "updated": True}
+    assert other_subject_activity["title"] == "Other user's ride"
+    assert delete_result == {"deleted": True, "activity_id": int(activity["id"])}
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_memory_items_support_crud_and_scoping(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure long-term memory items support CRUD and user scoping.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("memory")
+    other_subject = make_subject("memory-other")
+
+    memory_item = await postgres_store.add_memory_item(
+        subject,
+        title="Fueling preference",
+        content_markdown="Prefers gels after 75 minutes.",
+        category="nutrition",
+    )
+    other_memory_item = await postgres_store.add_memory_item(
+        other_subject,
+        title="Other memory",
+        content_markdown="Private to another subject.",
+        category="private",
+    )
+
+    listed_memory = await postgres_store.list_memory_items(
+        subject,
+        category="nutrition",
+    )
+    loaded_memory = await postgres_store.get_memory_item(
+        subject,
+        int(memory_item["id"]),
+    )
+    updated_memory = await postgres_store.update_memory_item(
+        subject,
+        memory_item_id=int(memory_item["id"]),
+        title="Fueling preference updated",
+        content_markdown="Prefers gels after 60 minutes.",
+        category="nutrition",
+    )
+    foreign_memory = await postgres_store.get_memory_item(
+        subject,
+        int(other_memory_item["id"]),
+    )
+    delete_result = await postgres_store.delete_memory_item(
+        subject,
+        int(memory_item["id"]),
+    )
+
+    assert listed_memory[0]["title"] == "Fueling preference"
+    assert loaded_memory is not None and loaded_memory["category"] == "nutrition"
+    assert updated_memory is not None
+    assert updated_memory["title"] == "Fueling preference updated"
+    assert foreign_memory is None
+    assert delete_result == {
+        "deleted": True,
+        "memory_item_id": int(memory_item["id"]),
+    }
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_daily_summary_handles_empty_target_only_and_combined_days(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure daily summaries are computed from targets, meals, and activities.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("summary")
+    product = await postgres_store.add_product(
+        subject,
+        name="Rice",
+        default_serving_g=100.0,
+        calories_per_100g=130.0,
+        carbs_g_per_100g=28.0,
+        protein_g_per_100g=2.4,
+        fat_g_per_100g=0.3,
+    )
+    meal = await postgres_store.add_meal(
+        subject,
+        meal_date="2026-04-22",
+        meal_label="Lunch",
+    )
+    await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(meal["id"]),
+        product_id=int(product["id"]),
+        grams=200.0,
+    )
+    await postgres_store.add_activity(
+        subject,
+        activity_date="2026-04-23",
+        title="Easy run",
+        calories=450.0,
+    )
+    await postgres_store.set_daily_target(
+        subject,
+        target_date="2026-04-21",
+        target_food_calories=2100.0,
+        target_exercise_calories=400.0,
+        target_protein_g=145.0,
+        target_carbs_g=220.0,
+        target_fat_g=55.0,
+    )
+    combined_meal = await postgres_store.add_meal(
+        subject,
+        meal_date="2026-04-24",
+        meal_label="Dinner",
+    )
+    await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(combined_meal["id"]),
+        product_id=int(product["id"]),
+        grams=150.0,
+    )
+    await postgres_store.add_activity(
+        subject,
+        activity_date="2026-04-24",
+        title="Trainer ride",
+        calories=600.0,
+    )
+    await postgres_store.set_daily_target(
+        subject,
+        target_date="2026-04-24",
+        target_food_calories=2400.0,
+        target_exercise_calories=600.0,
+        target_protein_g=160.0,
+        target_carbs_g=300.0,
+        target_fat_g=65.0,
+    )
+
+    empty_summary = await postgres_store.get_daily_summary(subject, "2026-04-20")
+    target_only_summary = await postgres_store.get_daily_summary(subject, "2026-04-21")
+    meals_only_summary = await postgres_store.get_daily_summary(subject, "2026-04-22")
+    activities_only_summary = await postgres_store.get_daily_summary(
+        subject,
+        "2026-04-23",
+    )
+    combined_summary = await postgres_store.get_daily_summary(subject, "2026-04-24")
+
+    assert empty_summary == {
+        "target_date": "2026-04-20",
+        "target_food_calories": None,
+        "target_exercise_calories": None,
+        "target_protein_g": None,
+        "target_carbs_g": None,
+        "target_fat_g": None,
+        "actual_food_calories": 0.0,
+        "actual_exercise_calories": 0.0,
+        "actual_protein_g": 0.0,
+        "actual_carbs_g": 0.0,
+        "actual_fat_g": 0.0,
+        "net_calories": 0.0,
+        "meals_count": 0,
+        "meal_items_count": 0,
+        "activities_count": 0,
+    }
+    assert target_only_summary["target_food_calories"] == 2100.0
+    assert target_only_summary["actual_food_calories"] == 0.0
+    assert meals_only_summary["actual_food_calories"] == 260.0
+    assert meals_only_summary["actual_carbs_g"] == 56.0
+    assert meals_only_summary["meals_count"] == 1
+    assert activities_only_summary["actual_exercise_calories"] == 450.0
+    assert activities_only_summary["activities_count"] == 1
+    assert combined_summary["target_food_calories"] == 2400.0
+    assert combined_summary["actual_food_calories"] == 195.0
+    assert combined_summary["actual_exercise_calories"] == 600.0
+    assert combined_summary["net_calories"] == -405.0
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_subject_scoping_hides_other_users_rows(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure subject filtering prevents one user from reading another's rows.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject_a = make_subject("scope-a")
+    subject_b = make_subject("scope-b")
+
+    product = await postgres_store.add_product(
+        subject_a,
+        name="Banana",
+        default_serving_g=120.0,
+        calories_per_100g=89.0,
+        carbs_g_per_100g=23.0,
+        protein_g_per_100g=1.1,
+        fat_g_per_100g=0.3,
+    )
+    meal = await postgres_store.add_meal(
+        subject_a,
+        meal_date="2026-04-14",
+        meal_label="Snack",
+    )
+    meal_item = await postgres_store.add_meal_item(
+        subject_a,
+        meal_id=int(meal["id"]),
+        product_id=int(product["id"]),
+        grams=120.0,
+    )
+    activity = await postgres_store.add_activity(
+        subject_a,
+        activity_date="2026-04-14",
+        title="Walk",
+        calories=150.0,
+    )
+    memory_item = await postgres_store.add_memory_item(
+        subject_a,
+        title="Bananas work well pre-run",
+        content_markdown="Easy on the stomach.",
+    )
+    await postgres_store.set_daily_target(
+        subject_a,
+        target_date="2026-04-14",
+        target_food_calories=2000.0,
+        target_exercise_calories=300.0,
+        target_protein_g=140.0,
+        target_carbs_g=240.0,
+        target_fat_g=55.0,
+    )
+
+    assert await postgres_store.get_product(subject_b, int(product["id"])) is None
+    assert await postgres_store.get_meal(subject_b, int(meal["id"])) is None
+    meal_items = await postgres_store.list_meal_items(subject_a, int(meal["id"]))
+    assert meal_items[0]["id"] == meal_item["id"]
+    assert await postgres_store.get_activity(subject_b, int(activity["id"])) is None
+    assert (
+        await postgres_store.get_memory_item(subject_b, int(memory_item["id"]))
+        is None
+    )
+    assert await postgres_store.get_daily_target(subject_b, "2026-04-14") is None
+    assert await postgres_store.list_products(subject_b) == []
+    assert await postgres_store.list_activities(subject_b) == []
+    assert await postgres_store.list_memory_items(subject_b) == []
 
 
 @pytest.mark.asyncio
@@ -325,9 +843,6 @@ async def test_postgres_store_disables_statement_cache_for_pooler_compatibility(
 
     Returns:
         None.
-
-    Raises:
-        AssertionError: If pool creation stops disabling statement caching.
     """
 
     captured_kwargs: dict[str, object] = {}
@@ -340,9 +855,6 @@ async def test_postgres_store_disables_statement_cache_for_pooler_compatibility(
 
         Returns:
             _FakePool: Pool stub used by `_ensure_pool()`.
-
-        Raises:
-            This helper does not raise errors directly.
         """
 
         captured_kwargs.update(kwargs)

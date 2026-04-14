@@ -1,20 +1,34 @@
 # apex-mcp-server
 
-This repo is a small FastMCP baseline for a private persona-profile server. It exposes a tiny MCP surface with profile tools, simple tabular user-data tools, one resource, one prompt, and one auth-debugging tool.
+This repo is a small FastMCP baseline for a private wellness-profile server. It exposes a focused MCP surface for profile documents, simple body metrics, food catalog data, daily nutrition and activity logs, long-term memory, one resource, one prompt, and one auth-debugging tool.
 
 The goal is to keep the proof of concept easy to understand and easy to reuse for future MCP servers. The server runs against one Postgres database in every environment, with Docker Compose for local development and a generic `DATABASE_URL` for Vercel, VMs, or other remote deployments.
 
 ## Key Features / Scope
 
 - Uses FastMCP with Streamable HTTP at `/mcp`.
-- Supports `get_profile`, `set_profile`, `get_user_data`, `set_user_data`, and `whoami` MCP tools.
+- Supports singleton document tools for:
+  - `get_profile` / `set_profile`
+  - `get_diet_preferences` / `set_diet_preferences`
+  - `get_diet_goals` / `set_diet_goals`
+  - `get_training_goals` / `set_training_goals`
+- Supports tabular body-metric tools for `get_user_data` / `set_user_data`.
+- Supports CRUD tools for:
+  - food products
+  - daily targets
+  - meal headers and meal items
+  - activity entries
+  - long-term memory items
+- Supports `get_daily_summary` to compute one day's target-vs-actual rollup on read.
 - Exposes `profile://me` as a `text/markdown` MCP resource.
 - Exposes `use_profile(task: str)` as a simple MCP prompt.
-- Stores one Postgres row per caller with:
-  - `profile_markdown`
-  - `weight_kg`
-  - `height_cm`
-  - `ftp_watts`
+- Stores wellness data in Postgres across:
+  - one singleton `user_profiles` row per caller
+  - user-private food products
+  - daily targets
+  - daily meals and meal items
+  - activity entries
+  - memory items
 - Supports three auth modes:
   - `none` for quick local experiments
   - `bearer` for protected local or direct-client use
@@ -274,8 +288,10 @@ Authorization: Bearer AAA
 │           └── 001_schema.sql
 ├── docs/
 │   ├── claude-oauth-plan.md
+│   ├── day-to-day-workflow.md
 │   ├── remote-mcp-from-scratch-guide.md
-│   └── vercel-deploy.md
+│   ├── vercel-deploy.md
+│   └── vercel-supabase-setup.md
 ├── src/
 │   └── apex_mcp_server/
 │       ├── asgi.py
@@ -303,6 +319,7 @@ Authorization: Bearer AAA
 ## Contributing / Development Notes
 
 - Keep the baseline simple. This repo is meant to be a small MCP starter, not a full platform.
+- Prefer adding a new table or plain SQL query over introducing an ORM or a heavy abstraction layer.
 - Add docstrings to every new function, method, and class.
 - Prefer straightforward control flow over abstraction-heavy patterns.
 - If you change behavior, update tests and the README in the same change.

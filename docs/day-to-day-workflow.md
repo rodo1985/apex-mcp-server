@@ -171,8 +171,12 @@ Also verify:
 
 - `set_profile`
 - `get_profile`
+- `set_diet_preferences`
+- `get_diet_preferences`
 - `set_user_data`
 - `get_user_data`
+- one collection write such as `add_product`, `add_meal`, or `add_memory_item`
+- `get_daily_summary`
 
 ### For auth changes
 

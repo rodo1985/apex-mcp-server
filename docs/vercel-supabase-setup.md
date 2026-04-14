@@ -37,24 +37,21 @@ Before you start, make sure you have:
 
 ## 2. Prepare Supabase
 
-This repo uses one small Postgres table called `user_profiles`.
+This repo uses a small wellness schema with these tables:
+
+- `user_profiles`
+- `food_products`
+- `daily_targets`
+- `daily_meals`
+- `meal_items`
+- `activity_entries`
+- `memory_items`
 
 You can let the app create the table automatically on first successful
-connection, because the server bootstraps the schema at startup. If you prefer
-to create it manually first, use the SQL below in the Supabase SQL editor:
-
-```sql
-create table if not exists public.user_profiles (
-  subject text primary key,
-  login text,
-  profile_markdown text not null default '',
-  weight_kg double precision,
-  height_cm double precision,
-  ftp_watts integer,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-```
+connection, because the server bootstraps the additive schema at startup. If
+you prefer to create it manually first, use the checked-in SQL file in
+[`docker/postgres/init/001_schema.sql`](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docker/postgres/init/001_schema.sql)
+in the Supabase SQL editor.
 
 ## 3. Get the Supabase connection string
 
@@ -207,8 +204,17 @@ After Claude connects successfully, test these MCP actions:
 - `whoami`
 - `set_profile`
 - `get_profile`
+- `set_diet_preferences`
+- `get_diet_preferences`
 - `set_user_data`
 - `get_user_data`
+- `add_product`
+- `set_daily_target`
+- `add_meal`
+- `add_meal_item`
+- `add_activity`
+- `add_memory_item`
+- `get_daily_summary`
 - `profile://me`
 - `use_profile`
 

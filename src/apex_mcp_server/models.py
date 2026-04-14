@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, TypedDict
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,3 +249,249 @@ class UserIdentity:
             "login": self.login,
             "request_id": self.request_id,
         }
+
+
+class ProductRecord(TypedDict):
+    """Describe one food product row returned by the MCP server.
+
+    Parameters:
+        id: Product identifier.
+        subject: Subject that owns the row.
+        name: Product display name.
+        default_serving_g: Optional default serving size in grams.
+        calories_per_100g: Calories per 100 grams.
+        carbs_g_per_100g: Carbohydrates per 100 grams.
+        protein_g_per_100g: Protein per 100 grams.
+        fat_g_per_100g: Fat per 100 grams.
+        notes_markdown: Freeform markdown notes.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    name: str
+    default_serving_g: float | None
+    calories_per_100g: float
+    carbs_g_per_100g: float
+    protein_g_per_100g: float
+    fat_g_per_100g: float
+    notes_markdown: str
+    created_at: str
+    updated_at: str
+
+
+class DailyTargetRecord(TypedDict):
+    """Describe one daily target row returned by the MCP server.
+
+    Parameters:
+        id: Target identifier.
+        subject: Subject that owns the row.
+        target_date: Local business date in ISO format.
+        target_food_calories: Planned calories from food.
+        target_exercise_calories: Planned calories from exercise.
+        target_protein_g: Planned protein grams.
+        target_carbs_g: Planned carbohydrate grams.
+        target_fat_g: Planned fat grams.
+        notes_markdown: Freeform markdown notes.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    target_date: str
+    target_food_calories: float
+    target_exercise_calories: float
+    target_protein_g: float
+    target_carbs_g: float
+    target_fat_g: float
+    notes_markdown: str
+    created_at: str
+    updated_at: str
+
+
+class MealRecord(TypedDict):
+    """Describe one meal header row returned by the MCP server.
+
+    Parameters:
+        id: Meal identifier.
+        subject: Subject that owns the row.
+        meal_date: Local business date in ISO format.
+        meal_label: Free-text meal label.
+        notes_markdown: Freeform markdown notes.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    meal_date: str
+    meal_label: str
+    notes_markdown: str
+    created_at: str
+    updated_at: str
+
+
+class MealItemRecord(TypedDict):
+    """Describe one meal-item row returned by the MCP server.
+
+    Parameters:
+        id: Meal-item identifier.
+        subject: Subject that owns the row.
+        meal_id: Parent meal identifier.
+        product_id: Optional product identifier used for snapshotting.
+        ingredient_name: Stored ingredient label.
+        grams: Consumed grams.
+        calories: Stored calorie snapshot.
+        carbs_g: Stored carbohydrate snapshot.
+        protein_g: Stored protein snapshot.
+        fat_g: Stored fat snapshot.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    meal_id: int
+    product_id: int | None
+    ingredient_name: str
+    grams: float
+    calories: float
+    carbs_g: float
+    protein_g: float
+    fat_g: float
+    created_at: str
+    updated_at: str
+
+
+class ActivityRecord(TypedDict):
+    """Describe one activity row returned by the MCP server.
+
+    Parameters:
+        id: Activity identifier.
+        subject: Subject that owns the row.
+        activity_date: Local business date in ISO format.
+        title: Activity title.
+        external_source: Optional upstream source such as `strava`.
+        external_activity_id: Optional upstream activity id.
+        athlete_id: Optional upstream athlete id.
+        sport_type: Optional sport type.
+        distance_meters: Optional distance in meters.
+        moving_time_seconds: Optional moving time in seconds.
+        elapsed_time_seconds: Optional elapsed time in seconds.
+        total_elevation_gain_meters: Optional elevation gain in meters.
+        average_speed_mps: Optional average speed in meters per second.
+        max_speed_mps: Optional max speed in meters per second.
+        average_heartrate: Optional average heart rate.
+        max_heartrate: Optional max heart rate.
+        average_watts: Optional average watts.
+        weighted_average_watts: Optional weighted average watts.
+        calories: Optional exercise calories.
+        kilojoules: Optional work in kilojoules.
+        suffer_score: Optional training-stress score.
+        trainer: Trainer flag.
+        commute: Commute flag.
+        manual: Manual-entry flag.
+        is_private: Privacy flag.
+        zones: Optional JSON zone summary.
+        laps: Optional JSON lap list.
+        streams: Optional JSON stream payload.
+        raw_payload: Optional raw provider payload.
+        notes_markdown: Freeform markdown notes.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    activity_date: str
+    title: str
+    external_source: str | None
+    external_activity_id: str | None
+    athlete_id: str | None
+    sport_type: str | None
+    distance_meters: float | None
+    moving_time_seconds: int | None
+    elapsed_time_seconds: int | None
+    total_elevation_gain_meters: float | None
+    average_speed_mps: float | None
+    max_speed_mps: float | None
+    average_heartrate: float | None
+    max_heartrate: float | None
+    average_watts: float | None
+    weighted_average_watts: float | None
+    calories: float | None
+    kilojoules: float | None
+    suffer_score: float | None
+    trainer: bool
+    commute: bool
+    manual: bool
+    is_private: bool
+    zones: Any
+    laps: Any
+    streams: Any
+    raw_payload: Any
+    notes_markdown: str
+    created_at: str
+    updated_at: str
+
+
+class MemoryItemRecord(TypedDict):
+    """Describe one long-term memory row returned by the MCP server.
+
+    Parameters:
+        id: Memory-item identifier.
+        subject: Subject that owns the row.
+        title: Memory title.
+        category: Optional category or tag.
+        content_markdown: Markdown content to remember.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    title: str
+    category: str | None
+    content_markdown: str
+    created_at: str
+    updated_at: str
+
+
+class DailySummaryRecord(TypedDict):
+    """Describe one computed target-vs-actual summary row.
+
+    Parameters:
+        target_date: Local business date in ISO format.
+        target_food_calories: Optional planned calories from food.
+        target_exercise_calories: Optional planned calories from exercise.
+        target_protein_g: Optional planned protein grams.
+        target_carbs_g: Optional planned carbohydrate grams.
+        target_fat_g: Optional planned fat grams.
+        actual_food_calories: Computed calories logged from meals.
+        actual_exercise_calories: Computed calories logged from activity.
+        actual_protein_g: Computed protein grams from meals.
+        actual_carbs_g: Computed carbohydrate grams from meals.
+        actual_fat_g: Computed fat grams from meals.
+        net_calories: Food calories minus exercise calories.
+        meals_count: Number of meals logged for the day.
+        meal_items_count: Number of meal items logged for the day.
+        activities_count: Number of activity entries logged for the day.
+    """
+
+    target_date: str
+    target_food_calories: float | None
+    target_exercise_calories: float | None
+    target_protein_g: float | None
+    target_carbs_g: float | None
+    target_fat_g: float | None
+    actual_food_calories: float
+    actual_exercise_calories: float
+    actual_protein_g: float
+    actual_carbs_g: float
+    actual_fat_g: float
+    net_calories: float
+    meals_count: int
+    meal_items_count: int
+    activities_count: int

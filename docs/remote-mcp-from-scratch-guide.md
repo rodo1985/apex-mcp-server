@@ -20,10 +20,11 @@ Start with the smallest useful server shape:
 - one prompt
 - one debugging tool such as `whoami`
 
-Keep the first data model tiny. A good starter shape is:
+Keep the first useful data model small but practical. A good starter shape is:
 
-- one markdown profile field
+- one or more markdown profile or goals fields
 - a few numeric fields for simple tabular data
+- one or two small collection tables that prove CRUD and summaries
 
 That is enough to prove:
 
@@ -45,7 +46,8 @@ Do not split early into:
 - local files for text
 - database for tabular data
 
-Small markdown content can live in Postgres `TEXT` columns just fine. Save object storage for true file assets later.
+Small markdown content can live in Postgres `TEXT` columns just fine. Save
+object storage for true file assets later.
 
 ## 3. Recommended local architecture
 
@@ -117,7 +119,7 @@ For Docker Compose, use:
 
 - `postgres:16-alpine` for the database
 - a named volume for Postgres data
-- one checked-in SQL init script for the first baseline schema
+- one checked-in SQL init script for the baseline schema
 
 ## 6. Manual Vercel upload flow
 
@@ -179,6 +181,12 @@ This keeps the app provider-agnostic. You can point it to:
 - Neon Postgres
 - a VM-hosted Postgres instance
 - any standard remote Postgres service
+
+For a baseline like this repo, keep the schema small and explicit:
+
+- one singleton user/profile table
+- a few user-scoped collection tables
+- computed summaries in code instead of precomputed rollup tables
 
 ### Supabase note
 
@@ -270,8 +278,17 @@ After connection, test:
 - `whoami`
 - `set_profile`
 - `get_profile`
+- `set_diet_preferences`
+- `get_diet_preferences`
 - `set_user_data`
 - `get_user_data`
+- `add_product`
+- `set_daily_target`
+- `add_meal`
+- `add_meal_item`
+- `add_activity`
+- `add_memory_item`
+- `get_daily_summary`
 
 ## 12. What Codex or Claude Code can automate
 
