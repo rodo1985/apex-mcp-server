@@ -74,9 +74,17 @@ def create_mcp_server(
         name=resolved_settings.app_name,
         version=resolved_settings.version,
         instructions=(
-            "A small FastMCP wellness pilot that stores markdown profile "
-            "documents, numeric user data, food catalog records, daily logs, "
-            "activity entries, and long-term memory in Postgres."
+            "APEX is an AI personal trainer and dietitian for endurance "
+            "athletes. This MCP server stores the caller's persistent "
+            "wellness context so an agent can reason over user "
+            "profile documents, body metrics, nutrition preferences, daily "
+            "targets, meal logs, training activities, and long-term memory. "
+            "Use the singleton get/set tools for stable user context such as "
+            "profile, goals, and body metrics. Use the CRUD collection tools "
+            "for food products, daily planning, meal logging, training "
+            "history, and memory items. Use get_daily_summary when you need "
+            "one computed view of targets versus actual intake and exercise "
+            "for a given date."
         ),
         auth=build_auth_provider(resolved_settings),
     )
@@ -98,14 +106,17 @@ def create_mcp_server(
 
     @mcp.tool
     async def get_profile(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's current profile markdown.
+        """Return the caller's main APEX user profile as markdown.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
             str: Stored profile markdown, or an empty string when no profile has
-                been saved yet.
+                been saved yet. This document is the broadest user-context
+                record and is the right place for identity, background,
+                endurance-sport context, working style, and other general
+                information that should influence most agent reasoning.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -120,10 +131,13 @@ def create_mcp_server(
         profile_markdown: str,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's current profile markdown.
+        """Overwrite the caller's main APEX user profile markdown.
 
         Parameters:
-            profile_markdown: New markdown content for the profile document.
+            profile_markdown: New markdown content for the main user profile
+                document. Use this for broad, durable context such as the
+                athlete's background, goals, preferences, and stable personal
+                facts that should be visible across conversations.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -145,13 +159,16 @@ def create_mcp_server(
 
     @mcp.tool
     async def get_user_data(ctx: Context = CURRENT_CONTEXT) -> dict[str, object]:
-        """Return the caller's saved numeric user data.
+        """Return the caller's core numeric body and performance metrics.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Numeric user fields with nullable values.
+            dict[str, object]: Numeric user fields with nullable values. The
+                expected fields are `weight_kg`, `height_cm`, and `ftp_watts`,
+                which give agents quick access to the athlete's body metrics
+                and cycling threshold power without parsing markdown.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -169,12 +186,14 @@ def create_mcp_server(
         ftp_watts: int | None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's saved numeric user data.
+        """Overwrite the caller's core numeric body and performance metrics.
 
         Parameters:
             weight_kg: Body weight in kilograms, or `null`.
             height_cm: Height in centimeters, or `null`.
-            ftp_watts: Functional threshold power in watts, or `null`.
+            ftp_watts: Functional threshold power in watts, or `null`. In
+                APEX this is the athlete's cycling FTP and can be used later
+                for performance and fueling calculations.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -200,14 +219,17 @@ def create_mcp_server(
 
     @mcp.tool
     async def get_diet_preferences(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's saved diet-preferences markdown.
+        """Return the caller's diet-preferences document as markdown.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
             str: Stored markdown, or an empty string when no preferences have
-                been saved yet.
+                been saved yet. This document should capture recommendation
+                constraints such as likes, dislikes, intolerances, fueling
+                habits, meal patterns, and practical diet rules the coach
+                should remember.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -222,11 +244,13 @@ def create_mcp_server(
         diet_preferences_markdown: str,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's saved diet-preferences markdown.
+        """Overwrite the caller's diet-preferences document.
 
         Parameters:
             diet_preferences_markdown: New markdown content for diet
-                preferences and recommendation hints.
+                preferences and recommendation hints. Use this for stable food
+                preferences, restrictions, recurring fueling choices, and
+                recommendation constraints that should guide meal suggestions.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -248,14 +272,16 @@ def create_mcp_server(
 
     @mcp.tool
     async def get_diet_goals(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's saved diet-goals markdown.
+        """Return the caller's diet-goals document as markdown.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
             str: Stored markdown, or an empty string when no goals have been
-                saved yet.
+                saved yet. This document is intended for narrative nutrition
+                goals such as fat-loss targets, race-fueling priorities,
+                hydration focus, or broader dietary strategy.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -270,10 +296,12 @@ def create_mcp_server(
         diet_goals_markdown: str,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's saved diet-goals markdown.
+        """Overwrite the caller's diet-goals document.
 
         Parameters:
-            diet_goals_markdown: New markdown content for diet goals.
+            diet_goals_markdown: New markdown content for narrative diet goals,
+                such as weight-loss objectives, fueling priorities, and other
+                medium- to long-term nutrition outcomes.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -295,14 +323,16 @@ def create_mcp_server(
 
     @mcp.tool
     async def get_training_goals(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's saved training-goals markdown.
+        """Return the caller's training-goals document as markdown.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
             str: Stored markdown, or an empty string when no goals have been
-                saved yet.
+                saved yet. This document is intended for narrative athletic
+                goals such as target races, performance objectives, focus
+                blocks, and qualitative training priorities.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -317,10 +347,12 @@ def create_mcp_server(
         training_goals_markdown: str,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's saved training-goals markdown.
+        """Overwrite the caller's training-goals document.
 
         Parameters:
-            training_goals_markdown: New markdown content for training goals.
+            training_goals_markdown: New markdown content for narrative
+                training goals, such as event preparation, performance goals,
+                block focus, and other coaching context.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -342,13 +374,15 @@ def create_mcp_server(
 
     @mcp.tool
     async def list_products(ctx: Context = CURRENT_CONTEXT) -> list[ProductRecord]:
-        """List the caller's private food-product catalog.
+        """List the caller's private food-product catalog used for logging.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            list[dict[str, object]]: Product rows ordered by name.
+            list[dict[str, object]]: Product rows ordered by name. Each row
+                represents a reusable food entry with per-100g nutrition that
+                can be referenced later when logging meal items.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -363,14 +397,16 @@ def create_mcp_server(
         product_id: int,
         ctx: Context = CURRENT_CONTEXT,
     ) -> ProductRecord | None:
-        """Return one food product from the caller's private catalog.
+        """Return one reusable food product from the caller's catalog.
 
         Parameters:
             product_id: Product identifier to fetch.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object] | None: Product row, or `null` when missing.
+            dict[str, object] | None: Product row, or `null` when missing. The
+                row includes the product name, optional default serving size,
+                per-100g calories, carbs, protein, fat, and optional notes.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -394,7 +430,7 @@ def create_mcp_server(
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
     ) -> ProductRecord:
-        """Add one food product to the caller's private catalog.
+        """Add one reusable food product to the caller's private catalog.
 
         Parameters:
             name: Product display name.
@@ -403,7 +439,8 @@ def create_mcp_server(
             carbs_g_per_100g: Carbohydrates per 100 grams.
             protein_g_per_100g: Protein per 100 grams.
             fat_g_per_100g: Fat per 100 grams.
-            notes_markdown: Optional product notes.
+            notes_markdown: Optional product notes such as brand, flavor, or
+                how the athlete usually uses this product.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -438,7 +475,7 @@ def create_mcp_server(
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
     ) -> ProductRecord | None:
-        """Replace one food product from the caller's private catalog.
+        """Replace one reusable food product from the caller's private catalog.
 
         Parameters:
             product_id: Product identifier to update.
@@ -504,7 +541,7 @@ def create_mcp_server(
         date_to: str | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> list[DailyTargetRecord]:
-        """List the caller's daily targets, optionally within a date range.
+        """List the caller's daily nutrition and exercise targets.
 
         Parameters:
             date_from: Optional inclusive lower ISO date bound.
@@ -512,7 +549,9 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            list[dict[str, object]]: Daily target rows ordered by date.
+            list[dict[str, object]]: Daily target rows ordered by date. These
+                rows represent the planned calories and macro targets for each
+                day, plus the expected exercise-calorie component.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -531,7 +570,7 @@ def create_mcp_server(
         target_date: str,
         ctx: Context = CURRENT_CONTEXT,
     ) -> DailyTargetRecord | None:
-        """Return the caller's daily target row for one calendar date.
+        """Return the caller's planned target row for one calendar date.
 
         Parameters:
             target_date: ISO date string such as `2026-04-14`.
@@ -539,6 +578,8 @@ def create_mcp_server(
 
         Returns:
             dict[str, object] | None: Daily target row, or `null` when missing.
+                The row includes target food calories, exercise calories,
+                protein, carbs, fat, and optional day-specific notes.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -571,7 +612,8 @@ def create_mcp_server(
             target_protein_g: Target grams of protein.
             target_carbs_g: Target grams of carbohydrates.
             target_fat_g: Target grams of fat.
-            notes_markdown: Optional freeform notes for the day.
+            notes_markdown: Optional freeform notes for the day, such as race
+                context, fueling strategy, or special scheduling constraints.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -631,7 +673,10 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            list[dict[str, object]]: Meal-header rows ordered by date.
+            list[dict[str, object]]: Meal-header rows ordered by date. Meal
+                headers are the daily log containers for labels such as
+                `breakfast`, `lunch`, `post-ride`, or any other user-defined
+                meal moment.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -656,7 +701,9 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object] | None: Meal row, or `null` when missing.
+            dict[str, object] | None: Meal row, or `null` when missing. This
+                is the parent record for one meal log and does not include the
+                individual food items; use `list_meal_items` for those.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -677,7 +724,8 @@ def create_mcp_server(
 
         Parameters:
             meal_date: ISO calendar date for the meal.
-            meal_label: Free-text meal label such as `breakfast`.
+            meal_label: Free-text meal label such as `breakfast`,
+                `post-training`, or `evening snack`.
             notes_markdown: Optional freeform notes.
             ctx: Current FastMCP request context injected automatically.
 
@@ -758,14 +806,16 @@ def create_mcp_server(
         meal_id: int,
         ctx: Context = CURRENT_CONTEXT,
     ) -> list[MealItemRecord]:
-        """List meal items attached to one caller-owned meal.
+        """List the food items that make up one caller-owned meal.
 
         Parameters:
             meal_id: Parent meal identifier.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            list[dict[str, object]]: Meal item rows ordered by id.
+            list[dict[str, object]]: Meal item rows ordered by id. Each row is
+                a nutrition snapshot for one ingredient or product entry inside
+                the meal.
 
         Raises:
             RuntimeError: If authentication is required or the meal is invalid.
@@ -790,14 +840,14 @@ def create_mcp_server(
         fat_g: float | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> MealItemRecord:
-        """Add one meal item for the current caller.
+        """Add one food item to a caller-owned meal log.
 
         Parameters:
             meal_id: Parent meal identifier.
             grams: Consumed grams for the item.
             ingredient_name: Optional free-text ingredient name.
             product_id: Optional catalog product identifier used for automatic
-                nutrient scaling.
+                nutrient scaling from the product's per-100g values.
             calories: Manual calories for non-catalog items.
             carbs_g: Manual carbohydrate grams for non-catalog items.
             protein_g: Manual protein grams for non-catalog items.
@@ -805,7 +855,9 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Newly created meal-item row.
+            dict[str, object]: Newly created meal-item row containing the
+                stored nutrition snapshot. Historical meal items keep their own
+                calories and macros even if the source product changes later.
 
         Raises:
             RuntimeError: If authentication is required or the meal/product is
@@ -840,7 +892,7 @@ def create_mcp_server(
         fat_g: float | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> MealItemRecord | None:
-        """Replace one meal item owned by the current caller.
+        """Replace one logged food item inside a caller-owned meal.
 
         Parameters:
             meal_item_id: Meal-item identifier to update.
@@ -911,7 +963,7 @@ def create_mcp_server(
         external_source: str | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> list[ActivityRecord]:
-        """List activity entries owned by the current caller.
+        """List the caller's logged or imported training activities.
 
         Parameters:
             date_from: Optional inclusive lower ISO date bound.
@@ -920,7 +972,10 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            list[dict[str, object]]: Activity rows ordered by date.
+            list[dict[str, object]]: Activity rows ordered by date. Rows may be
+                manually created or synced from an upstream source such as
+                Strava and are intended to support endurance analysis over
+                cycling and running sessions.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -940,14 +995,17 @@ def create_mcp_server(
         activity_id: int,
         ctx: Context = CURRENT_CONTEXT,
     ) -> ActivityRecord | None:
-        """Return one activity entry owned by the current caller.
+        """Return one training activity entry owned by the current caller.
 
         Parameters:
             activity_id: Activity identifier to fetch.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object] | None: Activity row, or `null` when missing.
+            dict[str, object] | None: Activity row, or `null` when missing. The
+                row can include both normalized metrics, such as distance,
+                power, and heart rate, and optional JSON payloads for richer
+                upstream provider detail.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -992,12 +1050,13 @@ def create_mcp_server(
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
     ) -> ActivityRecord:
-        """Add one activity entry for the current caller.
+        """Add one training activity entry for the current caller.
 
         Parameters:
             activity_date: ISO calendar date for the activity.
             title: Human-readable activity title.
-            external_source: Optional external source such as `strava`.
+            external_source: Optional external source such as `strava`. Use
+                this when preserving sync identity from upstream platforms.
             external_activity_id: Optional upstream activity identifier.
             athlete_id: Optional upstream athlete identifier.
             sport_type: Optional sport or activity type.
@@ -1011,9 +1070,9 @@ def create_mcp_server(
             max_heartrate: Optional max heart rate.
             average_watts: Optional average power.
             weighted_average_watts: Optional weighted average power.
-            calories: Optional exercise calories.
+            calories: Optional exercise calories burned.
             kilojoules: Optional work in kilojoules.
-            suffer_score: Optional training-stress score.
+            suffer_score: Optional training-stress score or similar load metric.
             trainer: Whether the activity happened on a trainer.
             commute: Whether the activity was a commute.
             manual: Whether the row was manually created.
@@ -1026,7 +1085,8 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Newly created activity row.
+            dict[str, object]: Newly created activity row suitable for training
+                analytics, daily summaries, and future sync workflows.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -1099,7 +1159,7 @@ def create_mcp_server(
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
     ) -> ActivityRecord | None:
-        """Replace one activity entry owned by the current caller.
+        """Replace one training activity entry owned by the current caller.
 
         Parameters:
             activity_id: Activity identifier to update.
@@ -1206,14 +1266,17 @@ def create_mcp_server(
         category: str | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> list[MemoryItemRecord]:
-        """List long-term memory items owned by the current caller.
+        """List the caller's long-term memory items.
 
         Parameters:
             category: Optional category filter.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            list[dict[str, object]]: Memory-item rows ordered by recency.
+            list[dict[str, object]]: Memory-item rows ordered by recency. These
+                items are intended for durable context that should survive
+                across sessions, such as recurring patterns, decisions,
+                observations, or facts worth remembering.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -1263,7 +1326,8 @@ def create_mcp_server(
         Parameters:
             title: Short memory title.
             content_markdown: Main markdown content to remember.
-            category: Optional category or tag.
+            category: Optional category or tag such as `nutrition`,
+                `training`, `injury`, or `preference`.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
@@ -1347,14 +1411,18 @@ def create_mcp_server(
         target_date: str,
         ctx: Context = CURRENT_CONTEXT,
     ) -> DailySummaryRecord:
-        """Return the caller's computed target-vs-actual summary for one day.
+        """Return the caller's computed daily dashboard summary for one day.
 
         Parameters:
             target_date: ISO date string such as `2026-04-14`.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Combined targets, actual totals, and counts.
+            dict[str, object]: Combined targets, actual totals, and counts for
+                one calendar day. This is the best single tool to answer
+                questions like "how did today go?" because it merges planned
+                targets, logged food intake, logged exercise calories, macro
+                totals, and object counts across meals and activities.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -1371,14 +1439,16 @@ def create_mcp_server(
 
     @mcp.tool
     async def whoami(ctx: Context = CURRENT_CONTEXT) -> dict[str, object]:
-        """Return the current caller identity for auth debugging.
+        """Return the current caller identity and auth-scoping payload.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
             dict[str, object]: Diagnostic identity payload with `authenticated`,
-                `subject`, `login`, and `request_id`.
+                `subject`, `login`, and `request_id`. This is mainly useful for
+                debugging auth, confirming OAuth identity mapping, and checking
+                which logical user namespace the current tools will read/write.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -1391,16 +1461,21 @@ def create_mcp_server(
         "profile://me",
         mime_type="text/markdown",
         annotations={"readOnlyHint": True, "idempotentHint": True},
-        description="The current caller's saved profile markdown.",
+        description=(
+            "The current caller's main APEX profile document as a readable "
+            "markdown resource."
+        ),
     )
     async def profile_resource(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Expose the current caller's profile as a readable MCP resource.
+        """Expose the current caller's main profile as a readable MCP resource.
 
         Parameters:
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            str: Stored profile markdown, or an empty string when missing.
+            str: Stored profile markdown, or an empty string when missing. This
+                resource is the read-only equivalent of `get_profile` and is
+                useful when a client prefers resource access over tool calls.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -1411,10 +1486,12 @@ def create_mcp_server(
         return await resolved_store.get_profile(identity.storage_subject())
 
     @mcp.prompt(
-        description="Inject the caller's saved profile into a simple task prompt.",
+        description=(
+            "Inject the caller's saved APEX profile into a simple task prompt."
+        ),
     )
     async def use_profile(task: str, ctx: Context = CURRENT_CONTEXT) -> PromptResult:
-        """Generate a prompt that includes the caller's saved profile.
+        """Generate a prompt that includes the caller's saved main profile.
 
         Parameters:
             task: Task the downstream LLM should complete.
@@ -1422,7 +1499,10 @@ def create_mcp_server(
 
         Returns:
             PromptResult: A single-message prompt enriched with the caller's
-                stored profile markdown.
+                stored profile markdown. This is a convenience prompt for
+                profile-aware downstream reasoning when an agent needs broad
+                personal context but does not want to manually fetch and stitch
+                the profile first.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
