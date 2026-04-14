@@ -180,6 +180,16 @@ This keeps the app provider-agnostic. You can point it to:
 - a VM-hosted Postgres instance
 - any standard remote Postgres service
 
+### Supabase note
+
+If you use Supabase with Vercel, start with the **Transaction pooler**
+connection string from the **Connect** dialog in the Supabase dashboard.
+
+If the connection string contains `[YOUR-PASSWORD]`, replace it with the
+database password you set when the project was created. If you no longer have
+that password, reset it from **Database → Settings**, then copy the connection
+string again.
+
 ## 8. WorkOS AuthKit setup
 
 Use the WorkOS dashboard, not the WorkOS AI installer, for this repo.

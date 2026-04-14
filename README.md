@@ -188,7 +188,42 @@ WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
 ```
 
 For the full manual Vercel deployment and remote testing guide, see [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
+For the focused Vercel + Supabase setup checklist used by this repo, see [docs/vercel-supabase-setup.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-supabase-setup.md).
 For the reusable end-to-end guide you can apply to future MCP servers, including manual Vercel upload, WorkOS setup, and Claude connector setup, see [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md).
+For the recommended normal development and release path after the one-time setup is done, see [docs/day-to-day-workflow.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/day-to-day-workflow.md).
+
+## Recommended Workflow
+
+After the one-time Vercel, Supabase, and WorkOS setup is complete, the normal
+workflow should stay simple:
+
+1. Start local Postgres:
+
+```bash
+make db-up
+```
+
+2. Develop and test locally:
+
+```bash
+make lint
+make test
+```
+
+3. Push your branch:
+
+```bash
+git push
+```
+
+4. Deploy when the change is ready:
+
+```bash
+vercel deploy . --prod
+```
+
+In most cases, you should not need to revisit Supabase settings, WorkOS
+settings, or Vercel production env vars for every update.
 
 ### Client connection notes
 

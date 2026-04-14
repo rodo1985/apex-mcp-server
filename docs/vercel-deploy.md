@@ -2,6 +2,9 @@
 
 This document is the manual guide for deploying this MCP server to Vercel and testing it remotely.
 
+If you specifically want the concrete Vercel + Supabase production path used by
+this repo, see [docs/vercel-supabase-setup.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-supabase-setup.md).
+
 This repo deploys as a single Python ASGI app on Vercel. The MCP endpoint is:
 
 ```text
@@ -33,6 +36,17 @@ DATABASE_URL=postgresql://user:password@host:5432/database
 ```
 
 The Postgres provider can be any managed or self-hosted service that exposes a normal connection string. This repo does not depend on a provider-specific SDK.
+
+If you use Supabase, get the connection string from:
+
+1. project dashboard
+2. **Connect**
+3. **Transaction pooler**
+4. copy the connection string
+5. replace `[YOUR-PASSWORD]` with the database password
+
+If you do not have the password anymore, reset it from **Database → Settings**
+in the Supabase project first.
 
 ## Local bearer-token mode
 

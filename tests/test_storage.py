@@ -13,6 +13,152 @@ from apex_mcp_server.storage import PostgresUserStore
 DEFAULT_TEST_DATABASE_URL = "postgresql://apex:apex@127.0.0.1:54329/apex_mcp_server"
 
 
+class _FakeConnection:
+    """Minimal asyncpg-like connection for pool bootstrap unit tests.
+
+    Parameters:
+        None.
+
+    Returns:
+        _FakeConnection: Connection stub with an `execute` coroutine.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    async def execute(self, query: str) -> str:
+        """Pretend to execute schema bootstrap SQL.
+
+        Parameters:
+            query: SQL statement executed by the store bootstrap.
+
+        Returns:
+            str: Static asyncpg-like command tag.
+
+        Raises:
+            AssertionError: If the store stops sending schema bootstrap SQL.
+        """
+
+        assert "CREATE TABLE IF NOT EXISTS user_profiles" in query
+        return "EXECUTE"
+
+
+class _FakeAcquireContext:
+    """Async context manager returned by the fake pool `acquire()` call.
+
+    Parameters:
+        connection: Fake connection yielded inside the context block.
+
+    Returns:
+        _FakeAcquireContext: Context manager used by `_ensure_pool()`.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    def __init__(self, connection: _FakeConnection) -> None:
+        """Store the fake connection returned by the async context manager.
+
+        Parameters:
+            connection: Fake connection yielded by `__aenter__`.
+
+        Returns:
+            None.
+
+        Raises:
+            This initializer does not raise errors directly.
+        """
+
+        self.connection = connection
+
+    async def __aenter__(self) -> _FakeConnection:
+        """Yield the fake connection inside the async context block.
+
+        Parameters:
+            None.
+
+        Returns:
+            _FakeConnection: The stub connection used by the test.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+        return self.connection
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        """Finish the async context manager without special handling.
+
+        Parameters:
+            exc_type: Optional exception type raised inside the context.
+            exc: Optional exception instance raised inside the context.
+            tb: Optional traceback raised inside the context.
+
+        Returns:
+            None.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+
+class _FakePool:
+    """Minimal pool stub used to unit test asyncpg pool creation options.
+
+    Parameters:
+        None.
+
+    Returns:
+        _FakePool: Pool stub with `acquire()` and `close()` methods.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    def __init__(self) -> None:
+        """Create a fake pool with one reusable fake connection.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            This initializer does not raise errors directly.
+        """
+
+        self.connection = _FakeConnection()
+
+    def acquire(self) -> _FakeAcquireContext:
+        """Return the async context manager used by the storage bootstrap.
+
+        Parameters:
+            None.
+
+        Returns:
+            _FakeAcquireContext: Async context manager yielding a connection.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+        return _FakeAcquireContext(self.connection)
+
+    async def close(self) -> None:
+        """Mirror asyncpg's `close()` signature for completeness.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+
 @pytest.fixture
 async def postgres_store() -> PostgresUserStore:
     """Return a Postgres store backed by the local Docker Compose database.
@@ -166,3 +312,48 @@ async def test_postgres_store_updates_user_data_without_erasing_profile(
         "height_cm": 175.0,
         "ftp_watts": 255,
     }
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_disables_statement_cache_for_pooler_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure asyncpg pool creation stays compatible with Supabase poolers.
+
+    Parameters:
+        monkeypatch: Pytest helper used to patch `asyncpg.create_pool`.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If pool creation stops disabling statement caching.
+    """
+
+    captured_kwargs: dict[str, object] = {}
+
+    async def fake_create_pool(**kwargs: object) -> _FakePool:
+        """Capture asyncpg pool options while returning a fake pool.
+
+        Parameters:
+            **kwargs: Pool options forwarded by `PostgresUserStore`.
+
+        Returns:
+            _FakePool: Pool stub used by `_ensure_pool()`.
+
+        Raises:
+            This helper does not raise errors directly.
+        """
+
+        captured_kwargs.update(kwargs)
+        return _FakePool()
+
+    monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+
+    store = PostgresUserStore("postgresql://demo:demo@localhost:5432/demo")
+    try:
+        await store._ensure_pool()
+    finally:
+        await store.close()
+
+    assert captured_kwargs["statement_cache_size"] == 0

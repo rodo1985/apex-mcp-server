@@ -402,6 +402,11 @@ class PostgresUserStore(UserStore):
                     min_size=1,
                     max_size=5,
                     command_timeout=30,
+                    # Supabase recommends a pooler connection for serverless
+                    # platforms such as Vercel. Disabling asyncpg's statement
+                    # cache keeps the app compatible with transaction poolers,
+                    # which do not support prepared statements reliably.
+                    statement_cache_size=0,
                 )
 
                 # Remote environments such as Vercel do not run the Docker init
