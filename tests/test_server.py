@@ -1352,7 +1352,7 @@ def test_server_can_be_constructed_in_oauth_mode(
 async def test_server_tools_cover_singletons_collections_and_summary(
     no_auth_settings: Settings,
 ) -> None:
-    """Exercise the MCP surface across singleton, CRUD, and summary tools.
+    """Exercise the grouped MCP surface across singleton, CRUD, and summary tools.
 
     Parameters:
         no_auth_settings: Local test settings.
@@ -1367,33 +1367,64 @@ async def test_server_tools_cover_singletons_collections_and_summary(
     )
 
     async with Client(server) as client:
-        initial_profile = await client.call_tool("get_profile")
-        initial_user_data = await client.call_tool("get_user_data")
+        published_tools = await client.list_tools()
+        tool_names = {tool.name for tool in published_tools}
+
+        initial_profile = await client.call_tool(
+            "profile_documents",
+            {"operation": "get", "document": "profile"},
+        )
+        initial_user_data = await client.call_tool(
+            "user_data",
+            {"operation": "get"},
+        )
 
         await client.call_tool(
-            "set_profile",
-            {"profile_markdown": "# Runner Persona\nWarm and practical."},
+            "profile_documents",
+            {
+                "operation": "set",
+                "document": "profile",
+                "markdown": "# Runner Persona\nWarm and practical.",
+            },
         )
         await client.call_tool(
-            "set_user_data",
-            {"weight_kg": 68.5, "height_cm": 174.0, "ftp_watts": 250},
+            "user_data",
+            {
+                "operation": "set",
+                "weight_kg": 68.5,
+                "height_cm": 174.0,
+                "ftp_watts": 250,
+            },
         )
         await client.call_tool(
-            "set_diet_preferences",
-            {"diet_preferences_markdown": "Prefer Mediterranean-style meals."},
+            "profile_documents",
+            {
+                "operation": "set",
+                "document": "diet_preferences",
+                "markdown": "Prefer Mediterranean-style meals.",
+            },
         )
         await client.call_tool(
-            "set_diet_goals",
-            {"diet_goals_markdown": "Aim for 0.5 kg/week fat loss."},
+            "profile_documents",
+            {
+                "operation": "set",
+                "document": "diet_goals",
+                "markdown": "Aim for 0.5 kg/week fat loss.",
+            },
         )
         await client.call_tool(
-            "set_training_goals",
-            {"training_goals_markdown": "Build FTP and keep long rides consistent."},
+            "profile_documents",
+            {
+                "operation": "set",
+                "document": "training_goals",
+                "markdown": "Build FTP and keep long rides consistent.",
+            },
         )
 
         product = await client.call_tool(
-            "add_product",
+            "products",
             {
+                "operation": "add",
                 "name": "Oats",
                 "default_serving_g": 60.0,
                 "calories_per_100g": 389.0,
@@ -1403,15 +1434,16 @@ async def test_server_tools_cover_singletons_collections_and_summary(
                 "notes_markdown": "Breakfast staple",
             },
         )
-        product_data = as_mapping(product.data)
-        listed_products = await client.call_tool("list_products")
+        product_data = as_mapping(product.data)["item"]
+        listed_products = await client.call_tool("products", {"operation": "list"})
         loaded_product = await client.call_tool(
-            "get_product",
-            {"product_id": product_data["id"]},
+            "products",
+            {"operation": "get", "product_id": product_data["id"]},
         )
         updated_product = await client.call_tool(
-            "update_product",
+            "products",
             {
+                "operation": "update",
                 "product_id": product_data["id"],
                 "name": "Rolled oats",
                 "default_serving_g": 70.0,
@@ -1424,8 +1456,9 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         )
 
         daily_target = await client.call_tool(
-            "set_daily_target",
+            "daily_targets",
             {
+                "operation": "set",
                 "target_date": "2026-04-14",
                 "target_food_calories": 2200.0,
                 "target_exercise_calories": 700.0,
@@ -1435,33 +1468,38 @@ async def test_server_tools_cover_singletons_collections_and_summary(
                 "notes_markdown": "Long ride day",
             },
         )
-        daily_target_data = as_mapping(daily_target.data)
-        listed_targets = await client.call_tool("list_daily_targets")
+        daily_target_data = as_mapping(daily_target.data)["item"]
+        listed_targets = await client.call_tool(
+            "daily_targets",
+            {"operation": "list"},
+        )
         loaded_target = await client.call_tool(
-            "get_daily_target",
-            {"target_date": "2026-04-14"},
+            "daily_targets",
+            {"operation": "get", "target_date": "2026-04-14"},
         )
 
         meal = await client.call_tool(
-            "add_meal",
+            "meals",
             {
+                "operation": "add",
                 "meal_date": "2026-04-14",
                 "meal_label": "Breakfast",
                 "notes_markdown": "Pre-ride meal",
             },
         )
-        meal_data = as_mapping(meal.data)
+        meal_data = as_mapping(meal.data)["item"]
         listed_meals = await client.call_tool(
-            "list_daily_meals",
-            {"meal_date": "2026-04-14"},
+            "meals",
+            {"operation": "list", "meal_date": "2026-04-14"},
         )
         loaded_meal = await client.call_tool(
-            "get_meal",
-            {"meal_id": meal_data["id"]},
+            "meals",
+            {"operation": "get", "meal_id": meal_data["id"]},
         )
         updated_meal = await client.call_tool(
-            "update_meal",
+            "meals",
             {
+                "operation": "update",
                 "meal_id": meal_data["id"],
                 "meal_date": "2026-04-14",
                 "meal_label": "Breakfast updated",
@@ -1470,21 +1508,23 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         )
 
         meal_item = await client.call_tool(
-            "add_meal_item",
+            "meal_items",
             {
+                "operation": "add",
                 "meal_id": meal_data["id"],
                 "product_id": product_data["id"],
                 "grams": 80.0,
             },
         )
-        meal_item_data = as_mapping(meal_item.data)
+        meal_item_data = as_mapping(meal_item.data)["item"]
         listed_meal_items = await client.call_tool(
-            "list_meal_items",
-            {"meal_id": meal_data["id"]},
+            "meal_items",
+            {"operation": "list", "meal_id": meal_data["id"]},
         )
         updated_meal_item = await client.call_tool(
-            "update_meal_item",
+            "meal_items",
             {
+                "operation": "update",
                 "meal_item_id": meal_item_data["id"],
                 "meal_id": meal_data["id"],
                 "product_id": product_data["id"],
@@ -1493,8 +1533,9 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         )
 
         activity = await client.call_tool(
-            "add_activity",
+            "activities",
             {
+                "operation": "add",
                 "activity_date": "2026-04-14",
                 "title": "Morning ride",
                 "external_source": "strava",
@@ -1508,18 +1549,23 @@ async def test_server_tools_cover_singletons_collections_and_summary(
                 "raw_payload": {"provider": "demo"},
             },
         )
-        activity_data = as_mapping(activity.data)
+        activity_data = as_mapping(activity.data)["item"]
         listed_activities = await client.call_tool(
-            "list_activities",
-            {"date_from": "2026-04-14", "date_to": "2026-04-14"},
+            "activities",
+            {
+                "operation": "list",
+                "date_from": "2026-04-14",
+                "date_to": "2026-04-14",
+            },
         )
         loaded_activity = await client.call_tool(
-            "get_activity",
-            {"activity_id": activity_data["id"]},
+            "activities",
+            {"operation": "get", "activity_id": activity_data["id"]},
         )
         updated_activity = await client.call_tool(
-            "update_activity",
+            "activities",
             {
+                "operation": "update",
                 "activity_id": activity_data["id"],
                 "activity_date": "2026-04-14",
                 "title": "Morning ride updated",
@@ -1533,25 +1579,27 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         )
 
         memory_item = await client.call_tool(
-            "add_memory_item",
+            "memory_items",
             {
+                "operation": "add",
                 "title": "Fueling preference",
                 "content_markdown": "Prefers gels after 90 minutes.",
                 "category": "nutrition",
             },
         )
-        memory_item_data = as_mapping(memory_item.data)
+        memory_item_data = as_mapping(memory_item.data)["item"]
         listed_memory_items = await client.call_tool(
-            "list_memory_items",
-            {"category": "nutrition"},
+            "memory_items",
+            {"operation": "list", "category": "nutrition"},
         )
         loaded_memory_item = await client.call_tool(
-            "get_memory_item",
-            {"memory_item_id": memory_item_data["id"]},
+            "memory_items",
+            {"operation": "get", "memory_item_id": memory_item_data["id"]},
         )
         updated_memory_item = await client.call_tool(
-            "update_memory_item",
+            "memory_items",
             {
+                "operation": "update",
                 "memory_item_id": memory_item_data["id"],
                 "title": "Fueling preference updated",
                 "content_markdown": "Prefers gels after 75 minutes.",
@@ -1563,11 +1611,23 @@ async def test_server_tools_cover_singletons_collections_and_summary(
             "get_daily_summary",
             {"target_date": "2026-04-14"},
         )
-        updated_profile = await client.call_tool("get_profile")
-        updated_user_data = await client.call_tool("get_user_data")
-        diet_preferences = await client.call_tool("get_diet_preferences")
-        diet_goals = await client.call_tool("get_diet_goals")
-        training_goals = await client.call_tool("get_training_goals")
+        updated_profile = await client.call_tool(
+            "profile_documents",
+            {"operation": "get", "document": "profile"},
+        )
+        updated_user_data = await client.call_tool("user_data", {"operation": "get"})
+        diet_preferences = await client.call_tool(
+            "profile_documents",
+            {"operation": "get", "document": "diet_preferences"},
+        )
+        diet_goals = await client.call_tool(
+            "profile_documents",
+            {"operation": "get", "document": "diet_goals"},
+        )
+        training_goals = await client.call_tool(
+            "profile_documents",
+            {"operation": "get", "document": "training_goals"},
+        )
         whoami_result = await client.call_tool("whoami")
         resource_result = await client.read_resource("profile://me")
         prompt_result = await client.get_prompt(
@@ -1575,63 +1635,96 @@ async def test_server_tools_cover_singletons_collections_and_summary(
             {"task": "Write a short training reminder."},
         )
         deleted_meal_item = await client.call_tool(
-            "delete_meal_item",
-            {"meal_item_id": meal_item_data["id"]},
+            "meal_items",
+            {"operation": "delete", "meal_item_id": meal_item_data["id"]},
         )
         deleted_meal = await client.call_tool(
-            "delete_meal",
-            {"meal_id": meal_data["id"]},
+            "meals",
+            {"operation": "delete", "meal_id": meal_data["id"]},
         )
         deleted_target = await client.call_tool(
-            "delete_daily_target",
-            {"target_date": "2026-04-14"},
+            "daily_targets",
+            {"operation": "delete", "target_date": "2026-04-14"},
         )
         deleted_activity = await client.call_tool(
-            "delete_activity",
-            {"activity_id": activity_data["id"]},
+            "activities",
+            {"operation": "delete", "activity_id": activity_data["id"]},
         )
         deleted_memory = await client.call_tool(
-            "delete_memory_item",
-            {"memory_item_id": memory_item_data["id"]},
+            "memory_items",
+            {"operation": "delete", "memory_item_id": memory_item_data["id"]},
         )
         deleted_product = await client.call_tool(
-            "delete_product",
-            {"product_id": product_data["id"]},
+            "products",
+            {"operation": "delete", "product_id": product_data["id"]},
         )
 
-    listed_products_data = as_mapping_list(listed_products.data)
-    loaded_product_data = as_mapping(loaded_product.data)
-    updated_product_data = as_mapping(updated_product.data)
-    listed_targets_data = as_mapping_list(listed_targets.data)
-    loaded_target_data = as_mapping(loaded_target.data)
-    listed_meals_data = as_mapping_list(listed_meals.data)
-    loaded_meal_data = as_mapping(loaded_meal.data)
-    updated_meal_data = as_mapping(updated_meal.data)
-    listed_meal_items_data = as_mapping_list(listed_meal_items.data)
-    updated_meal_item_data = as_mapping(updated_meal_item.data)
-    listed_activities_data = as_mapping_list(listed_activities.data)
-    loaded_activity_data = as_mapping(loaded_activity.data)
-    updated_activity_data = as_mapping(updated_activity.data)
-    listed_memory_items_data = as_mapping_list(listed_memory_items.data)
-    loaded_memory_item_data = as_mapping(loaded_memory_item.data)
-    updated_memory_item_data = as_mapping(updated_memory_item.data)
+    listed_products_data = as_mapping(listed_products.data)["items"]
+    loaded_product_data = as_mapping(loaded_product.data)["item"]
+    updated_product_data = as_mapping(updated_product.data)["item"]
+    listed_targets_data = as_mapping(listed_targets.data)["items"]
+    loaded_target_data = as_mapping(loaded_target.data)["item"]
+    listed_meals_data = as_mapping(listed_meals.data)["items"]
+    loaded_meal_data = as_mapping(loaded_meal.data)["item"]
+    updated_meal_data = as_mapping(updated_meal.data)["item"]
+    listed_meal_items_data = as_mapping(listed_meal_items.data)["items"]
+    updated_meal_item_data = as_mapping(updated_meal_item.data)["item"]
+    listed_activities_data = as_mapping(listed_activities.data)["items"]
+    loaded_activity_data = as_mapping(loaded_activity.data)["item"]
+    updated_activity_data = as_mapping(updated_activity.data)["item"]
+    listed_memory_items_data = as_mapping(listed_memory_items.data)["items"]
+    loaded_memory_item_data = as_mapping(loaded_memory_item.data)["item"]
+    updated_memory_item_data = as_mapping(updated_memory_item.data)["item"]
     summary_data = as_mapping(summary.data)
+    initial_profile_data = as_mapping(initial_profile.data)
+    initial_user_data_data = as_mapping(initial_user_data.data)
+    updated_profile_data = as_mapping(updated_profile.data)
+    updated_user_data_data = as_mapping(updated_user_data.data)
+    diet_preferences_data = as_mapping(diet_preferences.data)
+    diet_goals_data = as_mapping(diet_goals.data)
+    training_goals_data = as_mapping(training_goals.data)
 
-    assert initial_profile.data == ""
-    assert initial_user_data.data == {
+    assert tool_names == {
+        "profile_documents",
+        "user_data",
+        "products",
+        "daily_targets",
+        "meals",
+        "meal_items",
+        "activities",
+        "memory_items",
+        "get_daily_summary",
+        "whoami",
+    }
+    assert len(tool_names) <= 20
+    assert initial_profile_data == {
+        "operation": "get",
+        "document": "profile",
+        "markdown": "",
+    }
+    assert initial_user_data_data == {
+        "operation": "get",
         "weight_kg": None,
         "height_cm": None,
         "ftp_watts": None,
     }
-    assert updated_profile.data == "# Runner Persona\nWarm and practical."
-    assert updated_user_data.data == {
+    assert updated_profile_data == {
+        "operation": "get",
+        "document": "profile",
+        "markdown": "# Runner Persona\nWarm and practical.",
+    }
+    assert updated_user_data_data == {
+        "operation": "get",
         "weight_kg": 68.5,
         "height_cm": 174.0,
         "ftp_watts": 250,
     }
-    assert diet_preferences.data == "Prefer Mediterranean-style meals."
-    assert diet_goals.data == "Aim for 0.5 kg/week fat loss."
-    assert training_goals.data == "Build FTP and keep long rides consistent."
+    assert diet_preferences_data["markdown"] == "Prefer Mediterranean-style meals."
+    assert diet_goals_data["markdown"] == "Aim for 0.5 kg/week fat loss."
+    assert (
+        training_goals_data["markdown"]
+        == "Build FTP and keep long rides consistent."
+    )
     assert listed_products_data[0]["name"] == "Oats"
     assert loaded_product_data["name"] == "Oats"
     assert updated_product_data["name"] == "Rolled oats"
@@ -1667,21 +1760,33 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         in prompt_result.messages[0].content.text
     )
     assert prompt_result.meta == {"has_profile": True}
-    assert deleted_meal_item.data == {
+    assert as_mapping(deleted_meal_item.data) == {
+        "operation": "delete",
         "deleted": True,
         "meal_item_id": meal_item_data["id"],
     }
-    assert deleted_meal.data == {"deleted": True, "meal_id": meal_data["id"]}
-    assert deleted_target.data == {"deleted": True, "target_date": "2026-04-14"}
-    assert deleted_activity.data == {
+    assert as_mapping(deleted_meal.data) == {
+        "operation": "delete",
+        "deleted": True,
+        "meal_id": meal_data["id"],
+    }
+    assert as_mapping(deleted_target.data) == {
+        "operation": "delete",
+        "deleted": True,
+        "target_date": "2026-04-14",
+    }
+    assert as_mapping(deleted_activity.data) == {
+        "operation": "delete",
         "deleted": True,
         "activity_id": activity_data["id"],
     }
-    assert deleted_memory.data == {
+    assert as_mapping(deleted_memory.data) == {
+        "operation": "delete",
         "deleted": True,
         "memory_item_id": memory_item_data["id"],
     }
-    assert deleted_product.data == {
+    assert as_mapping(deleted_product.data) == {
+        "operation": "delete",
         "deleted": True,
         "product_id": product_data["id"],
     }

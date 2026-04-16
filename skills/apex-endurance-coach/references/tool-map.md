@@ -4,78 +4,78 @@
 
 Use these first when you need stable user context.
 
-- `get_profile` / `set_profile`
+- `profile_documents(operation="get" | "set", document="profile")`
   - Main user profile markdown
   - Use for identity, endurance background, stable personal context
-- `get_user_data` / `set_user_data`
+- `user_data(operation="get" | "set", ...)`
   - `weight_kg`, `height_cm`, `ftp_watts`
   - Use for body metrics and cycling threshold power
-- `get_diet_preferences` / `set_diet_preferences`
+- `profile_documents(operation="get" | "set", document="diet_preferences")`
   - Stable food likes, dislikes, restrictions, fueling habits
-- `get_diet_goals` / `set_diet_goals`
+- `profile_documents(operation="get" | "set", document="diet_goals")`
   - Narrative diet goals
-- `get_training_goals` / `set_training_goals`
+- `profile_documents(operation="get" | "set", document="training_goals")`
   - Narrative training goals
 
 ## Product catalog
 
 Use these before inventing a new food entry.
 
-- `list_products`
+- `products(operation="list")`
   - Check whether a reusable food already exists
-- `get_product`
+- `products(operation="get", product_id=...)`
   - Inspect one product in detail
-- `add_product`
+- `products(operation="add", ...)`
   - Create a reusable food with per-100g macros
-- `update_product`
+- `products(operation="update", product_id=..., ...)`
   - Correct or refine reusable product data
-- `delete_product`
+- `products(operation="delete", product_id=...)`
   - Remove a bad or duplicate product
 
 ## Daily planning
 
 Use these for the planned target of a day.
 
-- `list_daily_targets`
+- `daily_targets(operation="list", ...)`
   - Review multiple days
-- `get_daily_target`
+- `daily_targets(operation="get", target_date=...)`
   - Inspect one day's target
-- `set_daily_target`
+- `daily_targets(operation="set", target_date=..., ...)`
   - Create or replace the day's planned food calories, exercise calories, and macros
-- `delete_daily_target`
+- `daily_targets(operation="delete", target_date=...)`
   - Remove a target when it is no longer valid
 
 ## Meals and meal items
 
 Use meal headers as containers, then meal items as the actual logged foods.
 
-- `list_daily_meals`
+- `meals(operation="list", meal_date=...)`
   - Find meals for a day
-- `get_meal`
+- `meals(operation="get", meal_id=...)`
   - Inspect one meal header
-- `add_meal`
+- `meals(operation="add", ...)`
   - Create a meal container such as `breakfast`, `post-ride`, or `dinner`
-- `update_meal`
+- `meals(operation="update", meal_id=..., ...)`
   - Rename or adjust the date/notes of a meal
-- `delete_meal`
+- `meals(operation="delete", meal_id=...)`
   - Remove a meal header and its item list
 
-- `list_meal_items`
+- `meal_items(operation="list", meal_id=...)`
   - Read the foods inside one meal
-- `add_meal_item`
+- `meal_items(operation="add", meal_id=..., ...)`
   - Log one ingredient or product
   - Use `product_id` whenever possible
   - Otherwise provide manual calories and macros
-- `update_meal_item`
+- `meal_items(operation="update", meal_item_id=..., meal_id=..., ...)`
   - Correct a logged item
-- `delete_meal_item`
+- `meal_items(operation="delete", meal_item_id=...)`
   - Remove an incorrect item
 
 ### Meal logging playbook
 
 1. Resolve the date and meal label
 2. Create the meal if it does not exist
-3. Look in `list_products` for a reusable match
+3. Look in `products(operation="list")` for a reusable match
 4. Add the meal item
 5. Call `get_daily_summary`
 6. Explain current vs target and remaining values
@@ -84,15 +84,15 @@ Use meal headers as containers, then meal items as the actual logged foods.
 
 Use these for logged or imported training sessions.
 
-- `list_activities`
+- `activities(operation="list", ...)`
   - Filter by date range or external source
-- `get_activity`
+- `activities(operation="get", activity_id=...)`
   - Inspect one session
-- `add_activity`
+- `activities(operation="add", ...)`
   - Log a new session or store a synced upstream activity
-- `update_activity`
+- `activities(operation="update", activity_id=..., ...)`
   - Correct metrics or metadata
-- `delete_activity`
+- `activities(operation="delete", activity_id=...)`
   - Remove a bad session
 
 ### Activity notes
@@ -105,15 +105,15 @@ Use these for logged or imported training sessions.
 
 Use memory for durable, high-value facts.
 
-- `list_memory_items`
+- `memory_items(operation="list", ...)`
   - Review durable context, optionally by category
-- `get_memory_item`
+- `memory_items(operation="get", memory_item_id=...)`
   - Inspect one saved memory
-- `add_memory_item`
+- `memory_items(operation="add", ...)`
   - Save a durable fact or decision
-- `update_memory_item`
+- `memory_items(operation="update", memory_item_id=..., ...)`
   - Refine a saved memory
-- `delete_memory_item`
+- `memory_items(operation="delete", memory_item_id=...)`
   - Remove stale or incorrect memory
 
 ## Daily summary

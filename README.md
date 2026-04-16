@@ -7,18 +7,11 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
 ## Key Features / Scope
 
 - Uses FastMCP with Streamable HTTP at `/mcp`.
-- Supports singleton document tools for:
-  - `get_profile` / `set_profile`
-  - `get_diet_preferences` / `set_diet_preferences`
-  - `get_diet_goals` / `set_diet_goals`
-  - `get_training_goals` / `set_training_goals`
-- Supports tabular body-metric tools for `get_user_data` / `set_user_data`.
-- Supports CRUD tools for:
-  - food products
-  - daily targets
-  - meal headers and meal items
-  - activity entries
-  - long-term memory items
+- Uses grouped MCP tools to stay under common client tool-count limits:
+  - `profile_documents` for singleton markdown documents
+  - `user_data` for numeric body metrics
+  - `products`, `daily_targets`, `meals`, `meal_items`, `activities`, and
+    `memory_items` for collection CRUD operations
 - Supports `get_daily_summary` to compute one day's target-vs-actual rollup on read.
 - Exposes `profile://me` as a `text/markdown` MCP resource.
 - Exposes `use_profile(task: str)` as a simple MCP prompt.
@@ -205,6 +198,8 @@ For the full manual Vercel deployment and remote testing guide, see [docs/vercel
 For the focused Vercel + Supabase setup checklist used by this repo, see [docs/vercel-supabase-setup.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-supabase-setup.md).
 For the reusable end-to-end guide you can apply to future MCP servers, including manual Vercel upload, WorkOS setup, and Claude connector setup, see [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md).
 For the recommended normal development and release path after the one-time setup is done, see [docs/day-to-day-workflow.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/day-to-day-workflow.md).
+
+If you change the published MCP tool surface or authentication behavior, reconnect the Claude connector so it can refresh its tokens and tool schema.
 
 ## Recommended Workflow
 

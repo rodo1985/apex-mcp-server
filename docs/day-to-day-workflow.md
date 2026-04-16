@@ -169,13 +169,13 @@ Check:
 
 Also verify:
 
-- `set_profile`
-- `get_profile`
-- `set_diet_preferences`
-- `get_diet_preferences`
-- `set_user_data`
-- `get_user_data`
-- one collection write such as `add_product`, `add_meal`, or `add_memory_item`
+- `profile_documents(operation="set", document="profile", ...)`
+- `profile_documents(operation="get", document="profile")`
+- `profile_documents(operation="set", document="diet_preferences", ...)`
+- `user_data(operation="set", ...)`
+- `user_data(operation="get")`
+- one collection write such as `products(operation="add", ...)`,
+  `meals(operation="add", ...)`, or `memory_items(operation="add", ...)`
 - `get_daily_summary`
 
 ### For auth changes

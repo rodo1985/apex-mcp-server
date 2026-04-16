@@ -12,21 +12,19 @@ Use the APEX MCP server as the source of truth for persistent context. Be a prac
 Use the tools that exist today:
 
 - singleton markdown context:
-  - `get_profile` / `set_profile`
-  - `get_diet_preferences` / `set_diet_preferences`
-  - `get_diet_goals` / `set_diet_goals`
-  - `get_training_goals` / `set_training_goals`
+  - `profile_documents(operation="get" | "set", document=...)`
 - singleton numeric context:
-  - `get_user_data` / `set_user_data`
+  - `user_data(operation="get" | "set", ...)`
 - reusable food catalog:
-  - product CRUD tools
+  - `products(operation=...)`
 - daily planning and logging:
-  - daily target tools
-  - meal and meal-item tools
+  - `daily_targets(operation=...)`
+  - `meals(operation=...)`
+  - `meal_items(operation=...)`
 - activity history:
-  - activity CRUD tools
+  - `activities(operation=...)`
 - long-term context:
-  - memory CRUD tools
+  - `memory_items(operation=...)`
 - computed day view:
   - `get_daily_summary`
 
@@ -47,15 +45,15 @@ For exact tool families and common playbooks, read [references/tool-map.md](refe
 When the user asks for planning, recommendations, logging help, or review:
 
 1. Load the singleton context that matters:
-   - `get_profile`
-   - `get_user_data`
-   - `get_diet_preferences`
-   - `get_diet_goals`
-   - `get_training_goals`
+   - `profile_documents(operation="get", document="profile")`
+   - `user_data(operation="get")`
+   - `profile_documents(operation="get", document="diet_preferences")`
+   - `profile_documents(operation="get", document="diet_goals")`
+   - `profile_documents(operation="get", document="training_goals")`
 2. If the request is about a specific day, also load:
    - `get_daily_summary(target_date)`
-   - `get_daily_target(target_date)` when you need the stored target row directly
-   - `list_daily_meals(meal_date=...)` and `list_activities(...)` when detail is needed
+   - `daily_targets(operation="get", target_date=...)` when you need the stored target row directly
+   - `meals(operation="list", meal_date=...)` and `activities(operation="list", ...)` when detail is needed
 3. If any important singleton document is empty, guide the user to fill it in with focused questions and save it before relying on assumptions.
 
 Do not interrogate the user with a large intake form unless they ask for a full setup. Fill gaps incrementally while still helping.
@@ -104,7 +102,7 @@ Save answers as soon as they are clear instead of waiting for a perfect profile.
 
 Before estimating a new meal item from scratch:
 
-1. Call `list_products`
+1. Call `products(operation="list")`
 2. Look for an existing matching or near-matching product
 3. Reuse the stored product with `product_id` whenever it is a reasonable fit
 

@@ -169,18 +169,17 @@ https://<your-stable-production-domain>/mcp
 6. Verify the connector can call:
 
 - `whoami`
-- `set_profile`
-- `get_profile`
-- `set_diet_preferences`
-- `get_diet_preferences`
-- `set_user_data`
-- `get_user_data`
-- `add_product`
-- `set_daily_target`
-- `add_meal`
-- `add_meal_item`
-- `add_activity`
-- `add_memory_item`
+- `profile_documents(operation="set", document="profile", ...)`
+- `profile_documents(operation="get", document="profile")`
+- `profile_documents(operation="set", document="diet_preferences", ...)`
+- `user_data(operation="set", ...)`
+- `user_data(operation="get")`
+- `products(operation="add", ...)`
+- `daily_targets(operation="set", ...)`
+- `meals(operation="add", ...)`
+- `meal_items(operation="add", ...)`
+- `activities(operation="add", ...)`
+- `memory_items(operation="add", ...)`
 - `get_daily_summary`
 - `profile://me`
 - `use_profile`
@@ -200,6 +199,8 @@ Use this checklist when you want to make the Vercel deployment reachable by Clau
 9. Call `whoami` first to confirm the remote identity is correct.
 10. Verify at least one document write, one tabular write, and one collection
     write round-trip successfully.
+
+If you change the published MCP tool surface or authentication behavior, remove and re-add the Claude connector or reconnect it so Claude refreshes its tokens and tool schema.
 
 ## Local development checklist
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import CurrentContext
@@ -11,20 +11,19 @@ from fastmcp.prompts import Message, PromptResult
 from apex_mcp_server.auth import build_auth_provider
 from apex_mcp_server.config import Settings
 from apex_mcp_server.identity import resolve_identity
-from apex_mcp_server.models import (
-    ActivityRecord,
-    DailySummaryRecord,
-    DailyTargetRecord,
-    MealItemRecord,
-    MealRecord,
-    MemoryItemRecord,
-    ProductRecord,
-    UserData,
-    UserIdentity,
-)
+from apex_mcp_server.models import DailySummaryRecord, UserData, UserIdentity
 from apex_mcp_server.storage import UserStore, build_user_store
 
 CURRENT_CONTEXT = CurrentContext()
+DocumentName = Literal["profile", "diet_preferences", "diet_goals", "training_goals"]
+DocumentOperation = Literal["get", "set"]
+UserDataOperation = Literal["get", "set"]
+ProductOperation = Literal["list", "get", "add", "update", "delete"]
+DailyTargetOperation = Literal["list", "get", "set", "delete"]
+MealOperation = Literal["list", "get", "add", "update", "delete"]
+MealItemOperation = Literal["list", "add", "update", "delete"]
+ActivityOperation = Literal["list", "get", "add", "update", "delete"]
+MemoryOperation = Literal["list", "get", "add", "update", "delete"]
 
 
 def _resolve_request_identity(ctx: Context, auth_mode: str) -> UserIdentity:
@@ -79,12 +78,11 @@ def create_mcp_server(
             "wellness context so an agent can reason over user "
             "profile documents, body metrics, nutrition preferences, daily "
             "targets, meal logs, training activities, and long-term memory. "
-            "Use the singleton get/set tools for stable user context such as "
-            "profile, goals, and body metrics. Use the CRUD collection tools "
-            "for food products, daily planning, meal logging, training "
-            "history, and memory items. Use get_daily_summary when you need "
-            "one computed view of targets versus actual intake and exercise "
-            "for a given date."
+            "Use the grouped domain tools to read and update stable user "
+            "documents, body metrics, food products, daily targets, meal "
+            "logs, training history, and long-term memory. Use "
+            "get_daily_summary when you need one computed view of targets "
+            "versus actual intake and exercise for a given date."
         ),
         auth=build_auth_provider(resolved_settings),
     )
@@ -104,100 +102,153 @@ def create_mcp_server(
 
         return _resolve_request_identity(ctx, resolved_settings.auth_mode)
 
-    @mcp.tool
-    async def get_profile(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's main APEX user profile as markdown.
+    def _require_value(
+        value: object | None,
+        name: str,
+        operation: str,
+    ) -> object:
+        """Require an operation-specific parameter and fail clearly when missing.
 
         Parameters:
-            ctx: Current FastMCP request context injected automatically.
+            value: Raw parameter value provided by the caller.
+            name: Human-readable parameter name used in the error message.
+            operation: Operation currently being performed.
 
         Returns:
-            str: Stored profile markdown, or an empty string when no profile has
-                been saved yet. This document is the broadest user-context
-                record and is the right place for identity, background,
-                endurance-sport context, working style, and other general
-                information that should influence most agent reasoning.
+            object: The provided value when it is not `None`.
 
         Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
+            ValueError: If the value is missing.
         """
 
-        identity = current_identity(ctx)
-        return await resolved_store.get_profile(identity.storage_subject())
+        if value is None:
+            raise ValueError(f"{name} is required when operation='{operation}'.")
+        return value
+
+    def _item_result(
+        operation: str,
+        item: dict[str, object] | None,
+    ) -> dict[str, object]:
+        """Wrap one item-style response with the executed operation.
+
+        Parameters:
+            operation: Operation performed by the grouped tool.
+            item: Returned row payload, or `None` when missing.
+
+        Returns:
+            dict[str, object]: Normalized item response.
+        """
+
+        return {"operation": operation, "item": item}
+
+    def _items_result(
+        operation: str,
+        items: list[dict[str, object]],
+    ) -> dict[str, object]:
+        """Wrap a list-style response with item count metadata.
+
+        Parameters:
+            operation: Operation performed by the grouped tool.
+            items: Returned row payloads.
+
+        Returns:
+            dict[str, object]: Normalized list response.
+        """
+
+        return {"operation": operation, "count": len(items), "items": items}
+
+    def _document_methods(document: DocumentName) -> tuple[str, str]:
+        """Return the store getter and setter names for one singleton document.
+
+        Parameters:
+            document: Requested singleton document name.
+
+        Returns:
+            tuple[str, str]: Getter and setter method names on `UserStore`.
+        """
+
+        mapping = {
+            "profile": ("get_profile", "set_profile"),
+            "diet_preferences": (
+                "get_diet_preferences",
+                "set_diet_preferences",
+            ),
+            "diet_goals": ("get_diet_goals", "set_diet_goals"),
+            "training_goals": ("get_training_goals", "set_training_goals"),
+        }
+        return mapping[document]
 
     @mcp.tool
-    async def set_profile(
-        profile_markdown: str,
+    async def profile_documents(
+        operation: DocumentOperation,
+        document: DocumentName,
+        markdown: str | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's main APEX user profile markdown.
+        """Read or update one singleton APEX markdown document.
 
         Parameters:
-            profile_markdown: New markdown content for the main user profile
-                document. Use this for broad, durable context such as the
-                athlete's background, goals, preferences, and stable personal
-                facts that should be visible across conversations.
+            operation: Either `get` or `set`.
+            document: Singleton document name: `profile`,
+                `diet_preferences`, `diet_goals`, or `training_goals`.
+            markdown: Replacement markdown content required for `set`.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Save confirmation including `saved`, `subject`,
-                and `bytes`.
+            dict[str, object]: For `get`, returns `document` plus `markdown`.
+                For `set`, returns the save confirmation with `document` and
+                `operation` added. These documents hold the athlete's broad
+                profile, nutrition preferences, diet goals, and training goals.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        result = await resolved_store.set_profile(
-            identity.storage_subject(),
-            profile_markdown,
+        getter_name, setter_name = _document_methods(document)
+        subject = identity.storage_subject()
+
+        if operation == "get":
+            markdown_value = await getattr(resolved_store, getter_name)(subject)
+            return {
+                "operation": operation,
+                "document": document,
+                "markdown": markdown_value,
+            }
+
+        markdown_value = str(_require_value(markdown, "markdown", operation))
+        result = await getattr(resolved_store, setter_name)(
+            subject,
+            markdown_value,
             login=identity.login,
         )
-        return result.as_dict()
+        payload = result.as_dict()
+        payload["operation"] = operation
+        payload["document"] = document
+        return payload
 
     @mcp.tool
-    async def get_user_data(ctx: Context = CURRENT_CONTEXT) -> dict[str, object]:
-        """Return the caller's core numeric body and performance metrics.
-
-        Parameters:
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Numeric user fields with nullable values. The
-                expected fields are `weight_kg`, `height_cm`, and `ftp_watts`,
-                which give agents quick access to the athlete's body metrics
-                and cycling threshold power without parsing markdown.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        data = await resolved_store.get_user_data(identity.storage_subject())
-        return data.as_dict()
-
-    @mcp.tool
-    async def set_user_data(
-        weight_kg: float | None,
-        height_cm: float | None,
-        ftp_watts: int | None,
+    async def user_data(
+        operation: UserDataOperation,
+        weight_kg: float | None = None,
+        height_cm: float | None = None,
+        ftp_watts: int | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Overwrite the caller's core numeric body and performance metrics.
+        """Read or update the caller's numeric body and performance metrics.
 
         Parameters:
-            weight_kg: Body weight in kilograms, or `null`.
-            height_cm: Height in centimeters, or `null`.
-            ftp_watts: Functional threshold power in watts, or `null`. In
-                APEX this is the athlete's cycling FTP and can be used later
-                for performance and fueling calculations.
+            operation: Either `get` or `set`.
+            weight_kg: Body weight in kilograms used for `set`.
+            height_cm: Height in centimeters used for `set`.
+            ftp_watts: Cycling FTP in watts used for `set`.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Save confirmation plus the stored numeric values.
+            dict[str, object]: Numeric fields for `get`, or the save
+                confirmation plus stored values for `set`.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -205,633 +256,333 @@ def create_mcp_server(
         """
 
         identity = current_identity(ctx)
+        subject = identity.storage_subject()
+
+        if operation == "get":
+            data = await resolved_store.get_user_data(subject)
+            payload = data.as_dict()
+            payload["operation"] = operation
+            return payload
+
         data = UserData(
             weight_kg=weight_kg,
             height_cm=height_cm,
             ftp_watts=ftp_watts,
         )
         result = await resolved_store.set_user_data(
-            identity.storage_subject(),
+            subject,
             data,
             login=identity.login,
         )
-        return result.as_dict()
+        payload = result.as_dict()
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
-    async def get_diet_preferences(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's diet-preferences document as markdown.
-
-        Parameters:
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            str: Stored markdown, or an empty string when no preferences have
-                been saved yet. This document should capture recommendation
-                constraints such as likes, dislikes, intolerances, fueling
-                habits, meal patterns, and practical diet rules the coach
-                should remember.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_diet_preferences(identity.storage_subject())
-
-    @mcp.tool
-    async def set_diet_preferences(
-        diet_preferences_markdown: str,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> dict[str, object]:
-        """Overwrite the caller's diet-preferences document.
-
-        Parameters:
-            diet_preferences_markdown: New markdown content for diet
-                preferences and recommendation hints. Use this for stable food
-                preferences, restrictions, recurring fueling choices, and
-                recommendation constraints that should guide meal suggestions.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Save confirmation including `saved`, `subject`,
-                and `bytes`.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        result = await resolved_store.set_diet_preferences(
-            identity.storage_subject(),
-            diet_preferences_markdown,
-            login=identity.login,
-        )
-        return result.as_dict()
-
-    @mcp.tool
-    async def get_diet_goals(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's diet-goals document as markdown.
-
-        Parameters:
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            str: Stored markdown, or an empty string when no goals have been
-                saved yet. This document is intended for narrative nutrition
-                goals such as fat-loss targets, race-fueling priorities,
-                hydration focus, or broader dietary strategy.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_diet_goals(identity.storage_subject())
-
-    @mcp.tool
-    async def set_diet_goals(
-        diet_goals_markdown: str,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> dict[str, object]:
-        """Overwrite the caller's diet-goals document.
-
-        Parameters:
-            diet_goals_markdown: New markdown content for narrative diet goals,
-                such as weight-loss objectives, fueling priorities, and other
-                medium- to long-term nutrition outcomes.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Save confirmation including `saved`, `subject`,
-                and `bytes`.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        result = await resolved_store.set_diet_goals(
-            identity.storage_subject(),
-            diet_goals_markdown,
-            login=identity.login,
-        )
-        return result.as_dict()
-
-    @mcp.tool
-    async def get_training_goals(ctx: Context = CURRENT_CONTEXT) -> str:
-        """Return the caller's training-goals document as markdown.
-
-        Parameters:
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            str: Stored markdown, or an empty string when no goals have been
-                saved yet. This document is intended for narrative athletic
-                goals such as target races, performance objectives, focus
-                blocks, and qualitative training priorities.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_training_goals(identity.storage_subject())
-
-    @mcp.tool
-    async def set_training_goals(
-        training_goals_markdown: str,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> dict[str, object]:
-        """Overwrite the caller's training-goals document.
-
-        Parameters:
-            training_goals_markdown: New markdown content for narrative
-                training goals, such as event preparation, performance goals,
-                block focus, and other coaching context.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Save confirmation including `saved`, `subject`,
-                and `bytes`.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        result = await resolved_store.set_training_goals(
-            identity.storage_subject(),
-            training_goals_markdown,
-            login=identity.login,
-        )
-        return result.as_dict()
-
-    @mcp.tool
-    async def list_products(ctx: Context = CURRENT_CONTEXT) -> list[ProductRecord]:
-        """List the caller's private food-product catalog used for logging.
-
-        Parameters:
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            list[dict[str, object]]: Product rows ordered by name. Each row
-                represents a reusable food entry with per-100g nutrition that
-                can be referenced later when logging meal items.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.list_products(identity.storage_subject())
-
-    @mcp.tool
-    async def get_product(
-        product_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> ProductRecord | None:
-        """Return one reusable food product from the caller's catalog.
-
-        Parameters:
-            product_id: Product identifier to fetch.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Product row, or `null` when missing. The
-                row includes the product name, optional default serving size,
-                per-100g calories, carbs, protein, fat, and optional notes.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_product(
-            identity.storage_subject(),
-            product_id,
-        )
-
-    @mcp.tool
-    async def add_product(
-        name: str,
-        default_serving_g: float | None,
-        calories_per_100g: float,
-        carbs_g_per_100g: float,
-        protein_g_per_100g: float,
-        fat_g_per_100g: float,
+    async def products(
+        operation: ProductOperation,
+        product_id: int | None = None,
+        name: str | None = None,
+        default_serving_g: float | None = None,
+        calories_per_100g: float | None = None,
+        carbs_g_per_100g: float | None = None,
+        protein_g_per_100g: float | None = None,
+        fat_g_per_100g: float | None = None,
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
-    ) -> ProductRecord:
-        """Add one reusable food product to the caller's private catalog.
+    ) -> dict[str, object]:
+        """Manage reusable food products in the caller's private catalog.
 
         Parameters:
-            name: Product display name.
+            operation: One of `list`, `get`, `add`, `update`, or `delete`.
+            product_id: Product identifier required for `get`, `update`, and
+                `delete`.
+            name: Product display name required for `add` and `update`.
             default_serving_g: Optional common serving size in grams.
-            calories_per_100g: Calories per 100 grams.
-            carbs_g_per_100g: Carbohydrates per 100 grams.
-            protein_g_per_100g: Protein per 100 grams.
-            fat_g_per_100g: Fat per 100 grams.
-            notes_markdown: Optional product notes such as brand, flavor, or
-                how the athlete usually uses this product.
+            calories_per_100g: Calories per 100 grams for `add` and `update`.
+            carbs_g_per_100g: Carbs per 100 grams for `add` and `update`.
+            protein_g_per_100g: Protein per 100 grams for `add` and `update`.
+            fat_g_per_100g: Fat per 100 grams for `add` and `update`.
+            notes_markdown: Optional product notes.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Newly created product row.
+            dict[str, object]: List operations return `items`; get/add/update
+                return `item`; delete returns deletion metadata. Products are
+                reusable food entries that support quicker meal logging later.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        return await resolved_store.add_product(
-            identity.storage_subject(),
-            name=name,
-            default_serving_g=default_serving_g,
-            calories_per_100g=calories_per_100g,
-            carbs_g_per_100g=carbs_g_per_100g,
-            protein_g_per_100g=protein_g_per_100g,
-            fat_g_per_100g=fat_g_per_100g,
-            notes_markdown=notes_markdown,
+        subject = identity.storage_subject()
+
+        if operation == "list":
+            return _items_result(operation, await resolved_store.list_products(subject))
+        if operation == "get":
+            return _item_result(
+                operation,
+                await resolved_store.get_product(
+                    subject,
+                    int(_require_value(product_id, "product_id", operation)),
+                ),
+            )
+        if operation == "add":
+            return _item_result(
+                operation,
+                await resolved_store.add_product(
+                    subject,
+                    name=str(_require_value(name, "name", operation)),
+                    default_serving_g=default_serving_g,
+                    calories_per_100g=float(
+                        _require_value(
+                            calories_per_100g,
+                            "calories_per_100g",
+                            operation,
+                        )
+                    ),
+                    carbs_g_per_100g=float(
+                        _require_value(carbs_g_per_100g, "carbs_g_per_100g", operation)
+                    ),
+                    protein_g_per_100g=float(
+                        _require_value(
+                            protein_g_per_100g,
+                            "protein_g_per_100g",
+                            operation,
+                        )
+                    ),
+                    fat_g_per_100g=float(
+                        _require_value(fat_g_per_100g, "fat_g_per_100g", operation)
+                    ),
+                    notes_markdown=notes_markdown,
+                ),
+            )
+        if operation == "update":
+            return _item_result(
+                operation,
+                await resolved_store.update_product(
+                    subject,
+                    product_id=int(_require_value(product_id, "product_id", operation)),
+                    name=str(_require_value(name, "name", operation)),
+                    default_serving_g=default_serving_g,
+                    calories_per_100g=float(
+                        _require_value(
+                            calories_per_100g,
+                            "calories_per_100g",
+                            operation,
+                        )
+                    ),
+                    carbs_g_per_100g=float(
+                        _require_value(carbs_g_per_100g, "carbs_g_per_100g", operation)
+                    ),
+                    protein_g_per_100g=float(
+                        _require_value(
+                            protein_g_per_100g,
+                            "protein_g_per_100g",
+                            operation,
+                        )
+                    ),
+                    fat_g_per_100g=float(
+                        _require_value(fat_g_per_100g, "fat_g_per_100g", operation)
+                    ),
+                    notes_markdown=notes_markdown,
+                ),
+            )
+
+        payload = await resolved_store.delete_product(
+            subject,
+            int(_require_value(product_id, "product_id", operation)),
         )
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
-    async def update_product(
-        product_id: int,
-        name: str,
-        default_serving_g: float | None,
-        calories_per_100g: float,
-        carbs_g_per_100g: float,
-        protein_g_per_100g: float,
-        fat_g_per_100g: float,
-        notes_markdown: str = "",
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> ProductRecord | None:
-        """Replace one reusable food product from the caller's private catalog.
-
-        Parameters:
-            product_id: Product identifier to update.
-            name: Updated display name.
-            default_serving_g: Updated optional serving size in grams.
-            calories_per_100g: Updated calories per 100 grams.
-            carbs_g_per_100g: Updated carbohydrates per 100 grams.
-            protein_g_per_100g: Updated protein per 100 grams.
-            fat_g_per_100g: Updated fat per 100 grams.
-            notes_markdown: Updated product notes.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Updated product row, or `null` when
-                missing.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.update_product(
-            identity.storage_subject(),
-            product_id=product_id,
-            name=name,
-            default_serving_g=default_serving_g,
-            calories_per_100g=calories_per_100g,
-            carbs_g_per_100g=carbs_g_per_100g,
-            protein_g_per_100g=protein_g_per_100g,
-            fat_g_per_100g=fat_g_per_100g,
-            notes_markdown=notes_markdown,
-        )
-
-    @mcp.tool
-    async def delete_product(
-        product_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> dict[str, object]:
-        """Delete one food product from the caller's private catalog.
-
-        Parameters:
-            product_id: Product identifier to delete.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Deletion result including a boolean flag.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.delete_product(
-            identity.storage_subject(),
-            product_id,
-        )
-
-    @mcp.tool
-    async def list_daily_targets(
+    async def daily_targets(
+        operation: DailyTargetOperation,
+        target_date: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> list[DailyTargetRecord]:
-        """List the caller's daily nutrition and exercise targets.
-
-        Parameters:
-            date_from: Optional inclusive lower ISO date bound.
-            date_to: Optional inclusive upper ISO date bound.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            list[dict[str, object]]: Daily target rows ordered by date. These
-                rows represent the planned calories and macro targets for each
-                day, plus the expected exercise-calorie component.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.list_daily_targets(
-            identity.storage_subject(),
-            date_from=date_from,
-            date_to=date_to,
-        )
-
-    @mcp.tool
-    async def get_daily_target(
-        target_date: str,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> DailyTargetRecord | None:
-        """Return the caller's planned target row for one calendar date.
-
-        Parameters:
-            target_date: ISO date string such as `2026-04-14`.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Daily target row, or `null` when missing.
-                The row includes target food calories, exercise calories,
-                protein, carbs, fat, and optional day-specific notes.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_daily_target(
-            identity.storage_subject(),
-            target_date,
-        )
-
-    @mcp.tool
-    async def set_daily_target(
-        target_date: str,
-        target_food_calories: float,
-        target_exercise_calories: float,
-        target_protein_g: float,
-        target_carbs_g: float,
-        target_fat_g: float,
+        target_food_calories: float | None = None,
+        target_exercise_calories: float | None = None,
+        target_protein_g: float | None = None,
+        target_carbs_g: float | None = None,
+        target_fat_g: float | None = None,
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
-    ) -> DailyTargetRecord:
-        """Create or replace the caller's daily target row for one date.
-
-        Parameters:
-            target_date: ISO date string such as `2026-04-14`.
-            target_food_calories: Target calories from food for the day.
-            target_exercise_calories: Target calories expected from exercise.
-            target_protein_g: Target grams of protein.
-            target_carbs_g: Target grams of carbohydrates.
-            target_fat_g: Target grams of fat.
-            notes_markdown: Optional freeform notes for the day, such as race
-                context, fueling strategy, or special scheduling constraints.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Upserted daily target row.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.set_daily_target(
-            identity.storage_subject(),
-            target_date=target_date,
-            target_food_calories=target_food_calories,
-            target_exercise_calories=target_exercise_calories,
-            target_protein_g=target_protein_g,
-            target_carbs_g=target_carbs_g,
-            target_fat_g=target_fat_g,
-            notes_markdown=notes_markdown,
-        )
-
-    @mcp.tool
-    async def delete_daily_target(
-        target_date: str,
-        ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Delete the caller's daily target row for one calendar date.
+        """Manage the caller's per-day nutrition and exercise targets.
 
         Parameters:
-            target_date: ISO date string such as `2026-04-14`.
+            operation: One of `list`, `get`, `set`, or `delete`.
+            target_date: Target ISO date required for `get`, `set`, and
+                `delete`.
+            date_from: Optional lower ISO date bound for `list`.
+            date_to: Optional upper ISO date bound for `list`.
+            target_food_calories: Planned food calories for `set`.
+            target_exercise_calories: Planned exercise calories for `set`.
+            target_protein_g: Planned protein grams for `set`.
+            target_carbs_g: Planned carbohydrate grams for `set`.
+            target_fat_g: Planned fat grams for `set`.
+            notes_markdown: Optional planning notes for `set`.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Deletion result including the requested date.
+            dict[str, object]: List operations return `items`; get/set return
+                `item`; delete returns deletion metadata.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        return await resolved_store.delete_daily_target(
-            identity.storage_subject(),
-            target_date,
+        subject = identity.storage_subject()
+
+        if operation == "list":
+            return _items_result(
+                operation,
+                await resolved_store.list_daily_targets(
+                    subject,
+                    date_from=date_from,
+                    date_to=date_to,
+                ),
+            )
+        if operation == "get":
+            return _item_result(
+                operation,
+                await resolved_store.get_daily_target(
+                    subject,
+                    str(_require_value(target_date, "target_date", operation)),
+                ),
+            )
+        if operation == "set":
+            return _item_result(
+                operation,
+                await resolved_store.set_daily_target(
+                    subject,
+                    target_date=str(
+                        _require_value(target_date, "target_date", operation)
+                    ),
+                    target_food_calories=float(
+                        _require_value(
+                            target_food_calories,
+                            "target_food_calories",
+                            operation,
+                        )
+                    ),
+                    target_exercise_calories=float(
+                        _require_value(
+                            target_exercise_calories,
+                            "target_exercise_calories",
+                            operation,
+                        )
+                    ),
+                    target_protein_g=float(
+                        _require_value(target_protein_g, "target_protein_g", operation)
+                    ),
+                    target_carbs_g=float(
+                        _require_value(target_carbs_g, "target_carbs_g", operation)
+                    ),
+                    target_fat_g=float(
+                        _require_value(target_fat_g, "target_fat_g", operation)
+                    ),
+                    notes_markdown=notes_markdown,
+                ),
+            )
+
+        payload = await resolved_store.delete_daily_target(
+            subject,
+            str(_require_value(target_date, "target_date", operation)),
         )
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
-    async def list_daily_meals(
+    async def meals(
+        operation: MealOperation,
+        meal_id: int | None = None,
         meal_date: str | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> list[MealRecord]:
-        """List the caller's meal headers, optionally scoped to one day.
-
-        Parameters:
-            meal_date: Optional ISO date string.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            list[dict[str, object]]: Meal-header rows ordered by date. Meal
-                headers are the daily log containers for labels such as
-                `breakfast`, `lunch`, `post-ride`, or any other user-defined
-                meal moment.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.list_daily_meals(
-            identity.storage_subject(),
-            meal_date=meal_date,
-        )
-
-    @mcp.tool
-    async def get_meal(
-        meal_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MealRecord | None:
-        """Return one meal header owned by the current caller.
-
-        Parameters:
-            meal_id: Meal identifier to fetch.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Meal row, or `null` when missing. This
-                is the parent record for one meal log and does not include the
-                individual food items; use `list_meal_items` for those.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_meal(identity.storage_subject(), meal_id)
-
-    @mcp.tool
-    async def add_meal(
-        meal_date: str,
-        meal_label: str,
+        meal_label: str | None = None,
         notes_markdown: str = "",
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MealRecord:
-        """Add one meal header for the current caller.
-
-        Parameters:
-            meal_date: ISO calendar date for the meal.
-            meal_label: Free-text meal label such as `breakfast`,
-                `post-training`, or `evening snack`.
-            notes_markdown: Optional freeform notes.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Newly created meal row.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.add_meal(
-            identity.storage_subject(),
-            meal_date=meal_date,
-            meal_label=meal_label,
-            notes_markdown=notes_markdown,
-        )
-
-    @mcp.tool
-    async def update_meal(
-        meal_id: int,
-        meal_date: str,
-        meal_label: str,
-        notes_markdown: str = "",
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MealRecord | None:
-        """Replace one meal header owned by the current caller.
-
-        Parameters:
-            meal_id: Meal identifier to update.
-            meal_date: Replacement ISO calendar date.
-            meal_label: Replacement free-text meal label.
-            notes_markdown: Replacement freeform notes.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Updated meal row, or `null` when missing.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.update_meal(
-            identity.storage_subject(),
-            meal_id=meal_id,
-            meal_date=meal_date,
-            meal_label=meal_label,
-            notes_markdown=notes_markdown,
-        )
-
-    @mcp.tool
-    async def delete_meal(
-        meal_id: int,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Delete one meal header owned by the current caller.
+        """Manage caller-owned meal headers for one or more calendar days.
 
         Parameters:
-            meal_id: Meal identifier to delete.
+            operation: One of `list`, `get`, `add`, `update`, or `delete`.
+            meal_id: Meal identifier required for `get`, `update`, and
+                `delete`.
+            meal_date: Meal ISO date used for `list`, `add`, and `update`.
+            meal_label: User-defined meal label required for `add` and
+                `update`.
+            notes_markdown: Optional freeform meal notes.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Deletion result including a boolean flag.
+            dict[str, object]: List operations return `items`; get/add/update
+                return `item`; delete returns deletion metadata.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        return await resolved_store.delete_meal(identity.storage_subject(), meal_id)
+        subject = identity.storage_subject()
 
-    @mcp.tool
-    async def list_meal_items(
-        meal_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> list[MealItemRecord]:
-        """List the food items that make up one caller-owned meal.
+        if operation == "list":
+            return _items_result(
+                operation,
+                await resolved_store.list_daily_meals(subject, meal_date=meal_date),
+            )
+        if operation == "get":
+            return _item_result(
+                operation,
+                await resolved_store.get_meal(
+                    subject,
+                    int(_require_value(meal_id, "meal_id", operation)),
+                ),
+            )
+        if operation == "add":
+            return _item_result(
+                operation,
+                await resolved_store.add_meal(
+                    subject,
+                    meal_date=str(_require_value(meal_date, "meal_date", operation)),
+                    meal_label=str(_require_value(meal_label, "meal_label", operation)),
+                    notes_markdown=notes_markdown,
+                ),
+            )
+        if operation == "update":
+            return _item_result(
+                operation,
+                await resolved_store.update_meal(
+                    subject,
+                    meal_id=int(_require_value(meal_id, "meal_id", operation)),
+                    meal_date=str(_require_value(meal_date, "meal_date", operation)),
+                    meal_label=str(_require_value(meal_label, "meal_label", operation)),
+                    notes_markdown=notes_markdown,
+                ),
+            )
 
-        Parameters:
-            meal_id: Parent meal identifier.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            list[dict[str, object]]: Meal item rows ordered by id. Each row is
-                a nutrition snapshot for one ingredient or product entry inside
-                the meal.
-
-        Raises:
-            RuntimeError: If authentication is required or the meal is invalid.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.list_meal_items(
-            identity.storage_subject(),
-            meal_id,
+        payload = await resolved_store.delete_meal(
+            subject,
+            int(_require_value(meal_id, "meal_id", operation)),
         )
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
-    async def add_meal_item(
-        meal_id: int,
-        grams: float,
+    async def meal_items(
+        operation: MealItemOperation,
+        meal_id: int | None = None,
+        meal_item_id: int | None = None,
+        grams: float | None = None,
         ingredient_name: str | None = None,
         product_id: int | None = None,
         calories: float | None = None,
@@ -839,15 +590,18 @@ def create_mcp_server(
         protein_g: float | None = None,
         fat_g: float | None = None,
         ctx: Context = CURRENT_CONTEXT,
-    ) -> MealItemRecord:
-        """Add one food item to a caller-owned meal log.
+    ) -> dict[str, object]:
+        """Manage the food items inside one caller-owned meal.
 
         Parameters:
-            meal_id: Parent meal identifier.
-            grams: Consumed grams for the item.
+            operation: One of `list`, `add`, `update`, or `delete`.
+            meal_id: Parent meal identifier required for `list`, `add`, and
+                `update`.
+            meal_item_id: Meal-item identifier required for `update` and
+                `delete`.
+            grams: Consumed grams required for `add` and `update`.
             ingredient_name: Optional free-text ingredient name.
-            product_id: Optional catalog product identifier used for automatic
-                nutrient scaling from the product's per-100g values.
+            product_id: Optional catalog product identifier.
             calories: Manual calories for non-catalog items.
             carbs_g: Manual carbohydrate grams for non-catalog items.
             protein_g: Manual protein grams for non-catalog items.
@@ -855,173 +609,77 @@ def create_mcp_server(
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Newly created meal-item row containing the
-                stored nutrition snapshot. Historical meal items keep their own
-                calories and macros even if the source product changes later.
+            dict[str, object]: List operations return `items`; add/update
+                return `item`; delete returns deletion metadata.
 
         Raises:
             RuntimeError: If authentication is required or the meal/product is
                 invalid.
-            ValueError: If manual nutrient values are incomplete.
+            ValueError: If the requested operation is missing required fields
+                or manual nutrient values are incomplete.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        return await resolved_store.add_meal_item(
-            identity.storage_subject(),
-            meal_id=meal_id,
-            grams=grams,
-            ingredient_name=ingredient_name,
-            product_id=product_id,
-            calories=calories,
-            carbs_g=carbs_g,
-            protein_g=protein_g,
-            fat_g=fat_g,
+        subject = identity.storage_subject()
+
+        if operation == "list":
+            return _items_result(
+                operation,
+                await resolved_store.list_meal_items(
+                    subject,
+                    meal_id=int(_require_value(meal_id, "meal_id", operation)),
+                ),
+            )
+        if operation == "add":
+            return _item_result(
+                operation,
+                await resolved_store.add_meal_item(
+                    subject,
+                    meal_id=int(_require_value(meal_id, "meal_id", operation)),
+                    grams=float(_require_value(grams, "grams", operation)),
+                    ingredient_name=ingredient_name,
+                    product_id=product_id,
+                    calories=calories,
+                    carbs_g=carbs_g,
+                    protein_g=protein_g,
+                    fat_g=fat_g,
+                ),
+            )
+        if operation == "update":
+            return _item_result(
+                operation,
+                await resolved_store.update_meal_item(
+                    subject,
+                    meal_item_id=int(
+                        _require_value(meal_item_id, "meal_item_id", operation)
+                    ),
+                    meal_id=int(_require_value(meal_id, "meal_id", operation)),
+                    grams=float(_require_value(grams, "grams", operation)),
+                    ingredient_name=ingredient_name,
+                    product_id=product_id,
+                    calories=calories,
+                    carbs_g=carbs_g,
+                    protein_g=protein_g,
+                    fat_g=fat_g,
+                ),
+            )
+
+        payload = await resolved_store.delete_meal_item(
+            subject,
+            int(_require_value(meal_item_id, "meal_item_id", operation)),
         )
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
-    async def update_meal_item(
-        meal_item_id: int,
-        meal_id: int,
-        grams: float,
-        ingredient_name: str | None = None,
-        product_id: int | None = None,
-        calories: float | None = None,
-        carbs_g: float | None = None,
-        protein_g: float | None = None,
-        fat_g: float | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MealItemRecord | None:
-        """Replace one logged food item inside a caller-owned meal.
-
-        Parameters:
-            meal_item_id: Meal-item identifier to update.
-            meal_id: Replacement parent meal identifier.
-            grams: Replacement consumed grams.
-            ingredient_name: Replacement free-text ingredient name.
-            product_id: Replacement catalog product identifier, if any.
-            calories: Replacement manual calories for non-catalog items.
-            carbs_g: Replacement carbohydrate grams for non-catalog items.
-            protein_g: Replacement protein grams for non-catalog items.
-            fat_g: Replacement fat grams for non-catalog items.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Updated meal-item row, or `null` when
-                missing.
-
-        Raises:
-            RuntimeError: If authentication is required or the meal/product is
-                invalid.
-            ValueError: If manual nutrient values are incomplete.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.update_meal_item(
-            identity.storage_subject(),
-            meal_item_id=meal_item_id,
-            meal_id=meal_id,
-            grams=grams,
-            ingredient_name=ingredient_name,
-            product_id=product_id,
-            calories=calories,
-            carbs_g=carbs_g,
-            protein_g=protein_g,
-            fat_g=fat_g,
-        )
-
-    @mcp.tool
-    async def delete_meal_item(
-        meal_item_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> dict[str, object]:
-        """Delete one meal item owned by the current caller.
-
-        Parameters:
-            meal_item_id: Meal-item identifier to delete.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Deletion result including a boolean flag.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.delete_meal_item(
-            identity.storage_subject(),
-            meal_item_id,
-        )
-
-    @mcp.tool
-    async def list_activities(
+    async def activities(
+        operation: ActivityOperation,
+        activity_id: int | None = None,
+        activity_date: str | None = None,
+        title: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
-        external_source: str | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> list[ActivityRecord]:
-        """List the caller's logged or imported training activities.
-
-        Parameters:
-            date_from: Optional inclusive lower ISO date bound.
-            date_to: Optional inclusive upper ISO date bound.
-            external_source: Optional filter such as `strava`.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            list[dict[str, object]]: Activity rows ordered by date. Rows may be
-                manually created or synced from an upstream source such as
-                Strava and are intended to support endurance analysis over
-                cycling and running sessions.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.list_activities(
-            identity.storage_subject(),
-            date_from=date_from,
-            date_to=date_to,
-            external_source=external_source,
-        )
-
-    @mcp.tool
-    async def get_activity(
-        activity_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> ActivityRecord | None:
-        """Return one training activity entry owned by the current caller.
-
-        Parameters:
-            activity_id: Activity identifier to fetch.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Activity row, or `null` when missing. The
-                row can include both normalized metrics, such as distance,
-                power, and heart rate, and optional JSON payloads for richer
-                upstream provider detail.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_activity(
-            identity.storage_subject(),
-            activity_id,
-        )
-
-    @mcp.tool
-    async def add_activity(
-        activity_date: str,
-        title: str,
         external_source: str | None = None,
         external_activity_id: str | None = None,
         athlete_id: str | None = None,
@@ -1049,14 +707,18 @@ def create_mcp_server(
         raw_payload: dict[str, Any] | None = None,
         notes_markdown: str = "",
         ctx: Context = CURRENT_CONTEXT,
-    ) -> ActivityRecord:
-        """Add one training activity entry for the current caller.
+    ) -> dict[str, object]:
+        """Manage the caller's training-activity history.
 
         Parameters:
-            activity_date: ISO calendar date for the activity.
-            title: Human-readable activity title.
-            external_source: Optional external source such as `strava`. Use
-                this when preserving sync identity from upstream platforms.
+            operation: One of `list`, `get`, `add`, `update`, or `delete`.
+            activity_id: Activity identifier required for `get`, `update`, and
+                `delete`.
+            activity_date: Activity ISO date required for `add` and `update`.
+            title: Human-readable title required for `add` and `update`.
+            date_from: Optional lower ISO date bound for `list`.
+            date_to: Optional upper ISO date bound for `list`.
+            external_source: Optional sync source such as `strava`.
             external_activity_id: Optional upstream activity identifier.
             athlete_id: Optional upstream athlete identifier.
             sport_type: Optional sport or activity type.
@@ -1064,347 +726,230 @@ def create_mcp_server(
             moving_time_seconds: Optional moving time in seconds.
             elapsed_time_seconds: Optional elapsed time in seconds.
             total_elevation_gain_meters: Optional elevation gain in meters.
-            average_speed_mps: Optional average speed in meters per second.
-            max_speed_mps: Optional max speed in meters per second.
+            average_speed_mps: Optional average speed in m/s.
+            max_speed_mps: Optional max speed in m/s.
             average_heartrate: Optional average heart rate.
             max_heartrate: Optional max heart rate.
             average_watts: Optional average power.
             weighted_average_watts: Optional weighted average power.
             calories: Optional exercise calories burned.
             kilojoules: Optional work in kilojoules.
-            suffer_score: Optional training-stress score or similar load metric.
+            suffer_score: Optional training-load metric.
             trainer: Whether the activity happened on a trainer.
             commute: Whether the activity was a commute.
-            manual: Whether the row was manually created.
-            is_private: Whether the source marks the activity as private.
-            zones: Optional zone summary JSON.
-            laps: Optional lap JSON list.
-            streams: Optional stream JSON object.
+            manual: Whether the row was entered manually.
+            is_private: Whether the activity is private upstream.
+            zones: Optional zones JSON summary.
+            laps: Optional laps JSON list.
+            streams: Optional streams JSON object.
             raw_payload: Optional raw provider payload JSON.
             notes_markdown: Optional freeform notes.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Newly created activity row suitable for training
-                analytics, daily summaries, and future sync workflows.
+            dict[str, object]: List operations return `items`; get/add/update
+                return `item`; delete returns deletion metadata.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        return await resolved_store.add_activity(
-            identity.storage_subject(),
-            activity_date=activity_date,
-            title=title,
-            external_source=external_source,
-            external_activity_id=external_activity_id,
-            athlete_id=athlete_id,
-            sport_type=sport_type,
-            distance_meters=distance_meters,
-            moving_time_seconds=moving_time_seconds,
-            elapsed_time_seconds=elapsed_time_seconds,
-            total_elevation_gain_meters=total_elevation_gain_meters,
-            average_speed_mps=average_speed_mps,
-            max_speed_mps=max_speed_mps,
-            average_heartrate=average_heartrate,
-            max_heartrate=max_heartrate,
-            average_watts=average_watts,
-            weighted_average_watts=weighted_average_watts,
-            calories=calories,
-            kilojoules=kilojoules,
-            suffer_score=suffer_score,
-            trainer=trainer,
-            commute=commute,
-            manual=manual,
-            is_private=is_private,
-            zones=zones,
-            laps=laps,
-            streams=streams,
-            raw_payload=raw_payload,
-            notes_markdown=notes_markdown,
+        subject = identity.storage_subject()
+
+        if operation == "list":
+            return _items_result(
+                operation,
+                await resolved_store.list_activities(
+                    subject,
+                    date_from=date_from,
+                    date_to=date_to,
+                    external_source=external_source,
+                ),
+            )
+        if operation == "get":
+            return _item_result(
+                operation,
+                await resolved_store.get_activity(
+                    subject,
+                    int(_require_value(activity_id, "activity_id", operation)),
+                ),
+            )
+        if operation == "add":
+            return _item_result(
+                operation,
+                await resolved_store.add_activity(
+                    subject,
+                    activity_date=str(
+                        _require_value(activity_date, "activity_date", operation)
+                    ),
+                    title=str(_require_value(title, "title", operation)),
+                    external_source=external_source,
+                    external_activity_id=external_activity_id,
+                    athlete_id=athlete_id,
+                    sport_type=sport_type,
+                    distance_meters=distance_meters,
+                    moving_time_seconds=moving_time_seconds,
+                    elapsed_time_seconds=elapsed_time_seconds,
+                    total_elevation_gain_meters=total_elevation_gain_meters,
+                    average_speed_mps=average_speed_mps,
+                    max_speed_mps=max_speed_mps,
+                    average_heartrate=average_heartrate,
+                    max_heartrate=max_heartrate,
+                    average_watts=average_watts,
+                    weighted_average_watts=weighted_average_watts,
+                    calories=calories,
+                    kilojoules=kilojoules,
+                    suffer_score=suffer_score,
+                    trainer=trainer,
+                    commute=commute,
+                    manual=manual,
+                    is_private=is_private,
+                    zones=zones,
+                    laps=laps,
+                    streams=streams,
+                    raw_payload=raw_payload,
+                    notes_markdown=notes_markdown,
+                ),
+            )
+        if operation == "update":
+            return _item_result(
+                operation,
+                await resolved_store.update_activity(
+                    subject,
+                    activity_id=int(
+                        _require_value(activity_id, "activity_id", operation)
+                    ),
+                    activity_date=str(
+                        _require_value(activity_date, "activity_date", operation)
+                    ),
+                    title=str(_require_value(title, "title", operation)),
+                    external_source=external_source,
+                    external_activity_id=external_activity_id,
+                    athlete_id=athlete_id,
+                    sport_type=sport_type,
+                    distance_meters=distance_meters,
+                    moving_time_seconds=moving_time_seconds,
+                    elapsed_time_seconds=elapsed_time_seconds,
+                    total_elevation_gain_meters=total_elevation_gain_meters,
+                    average_speed_mps=average_speed_mps,
+                    max_speed_mps=max_speed_mps,
+                    average_heartrate=average_heartrate,
+                    max_heartrate=max_heartrate,
+                    average_watts=average_watts,
+                    weighted_average_watts=weighted_average_watts,
+                    calories=calories,
+                    kilojoules=kilojoules,
+                    suffer_score=suffer_score,
+                    trainer=trainer,
+                    commute=commute,
+                    manual=manual,
+                    is_private=is_private,
+                    zones=zones,
+                    laps=laps,
+                    streams=streams,
+                    raw_payload=raw_payload,
+                    notes_markdown=notes_markdown,
+                ),
+            )
+
+        payload = await resolved_store.delete_activity(
+            subject,
+            int(_require_value(activity_id, "activity_id", operation)),
         )
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
-    async def update_activity(
-        activity_id: int,
-        activity_date: str,
-        title: str,
-        external_source: str | None = None,
-        external_activity_id: str | None = None,
-        athlete_id: str | None = None,
-        sport_type: str | None = None,
-        distance_meters: float | None = None,
-        moving_time_seconds: int | None = None,
-        elapsed_time_seconds: int | None = None,
-        total_elevation_gain_meters: float | None = None,
-        average_speed_mps: float | None = None,
-        max_speed_mps: float | None = None,
-        average_heartrate: float | None = None,
-        max_heartrate: float | None = None,
-        average_watts: float | None = None,
-        weighted_average_watts: float | None = None,
-        calories: float | None = None,
-        kilojoules: float | None = None,
-        suffer_score: float | None = None,
-        trainer: bool = False,
-        commute: bool = False,
-        manual: bool = True,
-        is_private: bool = False,
-        zones: dict[str, Any] | None = None,
-        laps: list[dict[str, Any]] | None = None,
-        streams: dict[str, Any] | None = None,
-        raw_payload: dict[str, Any] | None = None,
-        notes_markdown: str = "",
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> ActivityRecord | None:
-        """Replace one training activity entry owned by the current caller.
-
-        Parameters:
-            activity_id: Activity identifier to update.
-            activity_date: Replacement ISO calendar date.
-            title: Replacement activity title.
-            external_source: Replacement external source.
-            external_activity_id: Replacement upstream activity identifier.
-            athlete_id: Replacement upstream athlete identifier.
-            sport_type: Replacement sport type.
-            distance_meters: Replacement distance in meters.
-            moving_time_seconds: Replacement moving time in seconds.
-            elapsed_time_seconds: Replacement elapsed time in seconds.
-            total_elevation_gain_meters: Replacement elevation gain in meters.
-            average_speed_mps: Replacement average speed in meters per second.
-            max_speed_mps: Replacement max speed in meters per second.
-            average_heartrate: Replacement average heart rate.
-            max_heartrate: Replacement max heart rate.
-            average_watts: Replacement average power.
-            weighted_average_watts: Replacement weighted average power.
-            calories: Replacement exercise calories.
-            kilojoules: Replacement work in kilojoules.
-            suffer_score: Replacement training-stress score.
-            trainer: Replacement trainer flag.
-            commute: Replacement commute flag.
-            manual: Replacement manual flag.
-            is_private: Replacement privacy flag.
-            zones: Replacement zone summary JSON.
-            laps: Replacement lap JSON list.
-            streams: Replacement stream JSON object.
-            raw_payload: Replacement raw provider payload JSON.
-            notes_markdown: Replacement freeform notes.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Updated activity row, or `null` when
-                missing.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.update_activity(
-            identity.storage_subject(),
-            activity_id=activity_id,
-            activity_date=activity_date,
-            title=title,
-            external_source=external_source,
-            external_activity_id=external_activity_id,
-            athlete_id=athlete_id,
-            sport_type=sport_type,
-            distance_meters=distance_meters,
-            moving_time_seconds=moving_time_seconds,
-            elapsed_time_seconds=elapsed_time_seconds,
-            total_elevation_gain_meters=total_elevation_gain_meters,
-            average_speed_mps=average_speed_mps,
-            max_speed_mps=max_speed_mps,
-            average_heartrate=average_heartrate,
-            max_heartrate=max_heartrate,
-            average_watts=average_watts,
-            weighted_average_watts=weighted_average_watts,
-            calories=calories,
-            kilojoules=kilojoules,
-            suffer_score=suffer_score,
-            trainer=trainer,
-            commute=commute,
-            manual=manual,
-            is_private=is_private,
-            zones=zones,
-            laps=laps,
-            streams=streams,
-            raw_payload=raw_payload,
-            notes_markdown=notes_markdown,
-        )
-
-    @mcp.tool
-    async def delete_activity(
-        activity_id: int,
+    async def memory_items(
+        operation: MemoryOperation,
+        memory_item_id: int | None = None,
+        title: str | None = None,
+        content_markdown: str | None = None,
+        category: str | None = None,
         ctx: Context = CURRENT_CONTEXT,
     ) -> dict[str, object]:
-        """Delete one activity entry owned by the current caller.
+        """Manage the caller's long-term memory items.
 
         Parameters:
-            activity_id: Activity identifier to delete.
+            operation: One of `list`, `get`, `add`, `update`, or `delete`.
+            memory_item_id: Memory identifier required for `get`, `update`,
+                and `delete`.
+            title: Memory title required for `add` and `update`.
+            content_markdown: Memory body required for `add` and `update`.
+            category: Optional category filter or saved tag.
             ctx: Current FastMCP request context injected automatically.
 
         Returns:
-            dict[str, object]: Deletion result including a boolean flag.
+            dict[str, object]: List operations return `items`; get/add/update
+                return `item`; delete returns deletion metadata.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields.
             Exception: Propagated from the configured storage backend.
         """
 
         identity = current_identity(ctx)
-        return await resolved_store.delete_activity(
-            identity.storage_subject(),
-            activity_id,
+        subject = identity.storage_subject()
+
+        if operation == "list":
+            return _items_result(
+                operation,
+                await resolved_store.list_memory_items(subject, category=category),
+            )
+        if operation == "get":
+            return _item_result(
+                operation,
+                await resolved_store.get_memory_item(
+                    subject,
+                    int(_require_value(memory_item_id, "memory_item_id", operation)),
+                ),
+            )
+        if operation == "add":
+            return _item_result(
+                operation,
+                await resolved_store.add_memory_item(
+                    subject,
+                    title=str(_require_value(title, "title", operation)),
+                    content_markdown=str(
+                        _require_value(
+                            content_markdown,
+                            "content_markdown",
+                            operation,
+                        )
+                    ),
+                    category=category,
+                ),
+            )
+        if operation == "update":
+            return _item_result(
+                operation,
+                await resolved_store.update_memory_item(
+                    subject,
+                    memory_item_id=int(
+                        _require_value(memory_item_id, "memory_item_id", operation)
+                    ),
+                    title=str(_require_value(title, "title", operation)),
+                    content_markdown=str(
+                        _require_value(
+                            content_markdown,
+                            "content_markdown",
+                            operation,
+                        )
+                    ),
+                    category=category,
+                ),
+            )
+
+        payload = await resolved_store.delete_memory_item(
+            subject,
+            int(_require_value(memory_item_id, "memory_item_id", operation)),
         )
-
-    @mcp.tool
-    async def list_memory_items(
-        category: str | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> list[MemoryItemRecord]:
-        """List the caller's long-term memory items.
-
-        Parameters:
-            category: Optional category filter.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            list[dict[str, object]]: Memory-item rows ordered by recency. These
-                items are intended for durable context that should survive
-                across sessions, such as recurring patterns, decisions,
-                observations, or facts worth remembering.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.list_memory_items(
-            identity.storage_subject(),
-            category=category,
-        )
-
-    @mcp.tool
-    async def get_memory_item(
-        memory_item_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MemoryItemRecord | None:
-        """Return one long-term memory item owned by the current caller.
-
-        Parameters:
-            memory_item_id: Memory-item identifier to fetch.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Memory row, or `null` when missing.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.get_memory_item(
-            identity.storage_subject(),
-            memory_item_id,
-        )
-
-    @mcp.tool
-    async def add_memory_item(
-        title: str,
-        content_markdown: str,
-        category: str | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MemoryItemRecord:
-        """Add one long-term memory item for the current caller.
-
-        Parameters:
-            title: Short memory title.
-            content_markdown: Main markdown content to remember.
-            category: Optional category or tag such as `nutrition`,
-                `training`, `injury`, or `preference`.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Newly created memory row.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.add_memory_item(
-            identity.storage_subject(),
-            title=title,
-            content_markdown=content_markdown,
-            category=category,
-        )
-
-    @mcp.tool
-    async def update_memory_item(
-        memory_item_id: int,
-        title: str,
-        content_markdown: str,
-        category: str | None = None,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> MemoryItemRecord | None:
-        """Replace one long-term memory item owned by the current caller.
-
-        Parameters:
-            memory_item_id: Memory-item identifier to update.
-            title: Replacement memory title.
-            content_markdown: Replacement markdown content.
-            category: Replacement category or tag.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object] | None: Updated memory row, or `null` when
-                missing.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.update_memory_item(
-            identity.storage_subject(),
-            memory_item_id=memory_item_id,
-            title=title,
-            content_markdown=content_markdown,
-            category=category,
-        )
-
-    @mcp.tool
-    async def delete_memory_item(
-        memory_item_id: int,
-        ctx: Context = CURRENT_CONTEXT,
-    ) -> dict[str, object]:
-        """Delete one long-term memory item owned by the current caller.
-
-        Parameters:
-            memory_item_id: Memory-item identifier to delete.
-            ctx: Current FastMCP request context injected automatically.
-
-        Returns:
-            dict[str, object]: Deletion result including a boolean flag.
-
-        Raises:
-            RuntimeError: If authentication is required but unavailable.
-            Exception: Propagated from the configured storage backend.
-        """
-
-        identity = current_identity(ctx)
-        return await resolved_store.delete_memory_item(
-            identity.storage_subject(),
-            memory_item_id,
-        )
+        payload["operation"] = operation
+        return payload
 
     @mcp.tool
     async def get_daily_summary(
@@ -1474,8 +1019,10 @@ def create_mcp_server(
 
         Returns:
             str: Stored profile markdown, or an empty string when missing. This
-                resource is the read-only equivalent of `get_profile` and is
-                useful when a client prefers resource access over tool calls.
+                resource is the read-only equivalent of
+                `profile_documents(operation="get", document="profile")` and
+                is useful when a client prefers resource access over tool
+                calls.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.

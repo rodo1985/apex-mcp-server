@@ -134,8 +134,7 @@ Keep the current bearer-token verifier exactly as the local-development path.
 
 Do not change the tools, resource, or prompt shape unless required:
 
-- `get_profile`
-- `set_profile`
+- `profile_documents`
 - `whoami`
 - `profile://me`
 - `use_profile(task)`
@@ -205,10 +204,10 @@ Once deployed:
 3. Complete the OAuth flow.
 4. Confirm the connector can call:
    - `whoami`
-   - `set_profile`
-   - `get_profile`
-   - `set_user_data`
-   - `get_user_data`
+   - `profile_documents(operation="set", document="profile", ...)`
+   - `profile_documents(operation="get", document="profile")`
+   - `user_data(operation="set", ...)`
+   - `user_data(operation="get")`
 5. Confirm reconnect works after token refresh.
 
 ## What not to do

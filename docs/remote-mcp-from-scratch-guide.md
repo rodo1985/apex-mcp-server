@@ -276,18 +276,17 @@ https://your-app.vercel.app/mcp
 After connection, test:
 
 - `whoami`
-- `set_profile`
-- `get_profile`
-- `set_diet_preferences`
-- `get_diet_preferences`
-- `set_user_data`
-- `get_user_data`
-- `add_product`
-- `set_daily_target`
-- `add_meal`
-- `add_meal_item`
-- `add_activity`
-- `add_memory_item`
+- `profile_documents(operation="set", document="profile", ...)`
+- `profile_documents(operation="get", document="profile")`
+- `profile_documents(operation="set", document="diet_preferences", ...)`
+- `user_data(operation="set", ...)`
+- `user_data(operation="get")`
+- `products(operation="add", ...)`
+- `daily_targets(operation="set", ...)`
+- `meals(operation="add", ...)`
+- `meal_items(operation="add", ...)`
+- `activities(operation="add", ...)`
+- `memory_items(operation="add", ...)`
 - `get_daily_summary`
 
 ## 12. What Codex or Claude Code can automate
