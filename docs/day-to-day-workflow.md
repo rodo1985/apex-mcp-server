@@ -174,6 +174,8 @@ Also verify:
 - `profile_documents(operation="set", document="diet_preferences", ...)`
 - `user_data(operation="set", ...)`
 - `user_data(operation="get")`
+- `daily_metrics(operation="set", metric_type="weight", ...)`
+- `daily_metrics(operation="list", metric_type="weight")`
 - one collection write such as `products(operation="add", ...)`,
   `meals(operation="add", ...)`, or `memory_items(operation="add", ...)`
 - `get_daily_summary`

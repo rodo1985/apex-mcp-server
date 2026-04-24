@@ -1,6 +1,6 @@
 # apex-mcp-server
 
-This repo is a small FastMCP baseline for a private wellness-profile server. It exposes a focused MCP surface for profile documents, simple body metrics, food catalog data, daily nutrition and activity logs, long-term memory, one resource, one prompt, and one auth-debugging tool.
+This repo is a small FastMCP baseline for a private wellness-profile server. It exposes a focused MCP surface for profile documents, simple body metrics, food catalog data, daily nutrition logs, daily wellness metrics, activity logs, long-term memory, one resource, one prompt, and one auth-debugging tool.
 
 The goal is to keep the proof of concept easy to understand and easy to reuse for future MCP servers. The server runs against one Postgres database in every environment, with Docker Compose for local development and a generic `DATABASE_URL` for Vercel, VMs, or other remote deployments.
 
@@ -10,15 +10,18 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
 - Uses grouped MCP tools to stay under common client tool-count limits:
   - `profile_documents` for singleton markdown documents
   - `user_data` for numeric body metrics
-  - `products`, `daily_targets`, `meals`, `meal_items`, `activities`, and
-    `memory_items` for collection CRUD operations
+  - `products`, `daily_targets`, `daily_metrics`, `meals`, `meal_items`,
+    `activities`, and `memory_items` for collection CRUD operations
 - Supports `get_daily_summary` to compute one day's target-vs-actual rollup on read.
+- Returns an internal `usage_count` on food products so agents can see how often
+  a catalog item has been used in successful meal-item additions.
 - Exposes `profile://me` as a `text/markdown` MCP resource.
 - Exposes `use_profile(task: str)` as a simple MCP prompt.
 - Stores wellness data in Postgres across:
   - one singleton `user_profiles` row per caller
-  - user-private food products
+  - user-private food products with internal usage counts
   - daily targets
+  - daily wellness metrics
   - daily meals and meal items
   - activity entries
   - memory items
@@ -196,10 +199,24 @@ WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
 
 For the full manual Vercel deployment and remote testing guide, see [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
 For the focused Vercel + Supabase setup checklist used by this repo, see [docs/vercel-supabase-setup.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-supabase-setup.md).
+For the daily wellness metric tool and schema details, see [docs/daily-metrics.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/daily-metrics.md).
 For the reusable end-to-end guide you can apply to future MCP servers, including manual Vercel upload, WorkOS setup, and Claude connector setup, see [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md).
 For the recommended normal development and release path after the one-time setup is done, see [docs/day-to-day-workflow.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/day-to-day-workflow.md).
 
 If you change the published MCP tool surface or authentication behavior, reconnect the Claude connector so it can refresh its tokens and tool schema.
+
+## Daily Metrics
+
+Use `daily_metrics` to log date-scoped wellness trend values without adding a new tool for every metric type.
+
+Supported operations:
+
+- `daily_metrics(operation="set", metric_date="2026-04-14", metric_type="weight", value=68.5)`
+- `daily_metrics(operation="get", metric_date="2026-04-14", metric_type="weight")`
+- `daily_metrics(operation="list", date_from="2026-04-01", date_to="2026-04-30", metric_type="weight")`
+- `daily_metrics(operation="delete", metric_date="2026-04-14", metric_type="weight")`
+
+Supported metric types are `weight`, `steps`, and `sleep_hours`. Re-logging the same caller, date, and metric type updates the existing row. These metrics are stored for trend tracking and are not folded into `get_daily_summary`.
 
 ## Recommended Workflow
 
@@ -283,6 +300,7 @@ Authorization: Bearer AAA
 │           └── 001_schema.sql
 ├── docs/
 │   ├── claude-oauth-plan.md
+│   ├── daily-metrics.md
 │   ├── day-to-day-workflow.md
 │   ├── remote-mcp-from-scratch-guide.md
 │   ├── vercel-deploy.md

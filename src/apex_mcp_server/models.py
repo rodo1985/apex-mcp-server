@@ -263,6 +263,8 @@ class ProductRecord(TypedDict):
         carbs_g_per_100g: Carbohydrates per 100 grams.
         protein_g_per_100g: Protein per 100 grams.
         fat_g_per_100g: Fat per 100 grams.
+        usage_count: Internal lifetime count of successful product-backed meal
+            item additions.
         notes_markdown: Freeform markdown notes.
         created_at: Creation timestamp in ISO format.
         updated_at: Update timestamp in ISO format.
@@ -276,6 +278,7 @@ class ProductRecord(TypedDict):
     carbs_g_per_100g: float
     protein_g_per_100g: float
     fat_g_per_100g: float
+    usage_count: int
     notes_markdown: str
     created_at: str
     updated_at: str
@@ -307,6 +310,28 @@ class DailyTargetRecord(TypedDict):
     target_carbs_g: float
     target_fat_g: float
     notes_markdown: str
+    created_at: str
+    updated_at: str
+
+
+class DailyMetricRecord(TypedDict):
+    """Describe one date-scoped wellness metric row returned by the MCP server.
+
+    Parameters:
+        id: Metric row identifier.
+        subject: Subject that owns the row.
+        metric_date: Local business date in ISO format.
+        metric_type: Supported metric type such as `weight`.
+        value: Numeric metric value.
+        created_at: Creation timestamp in ISO format.
+        updated_at: Update timestamp in ISO format.
+    """
+
+    id: int
+    subject: str
+    metric_date: str
+    metric_type: str
+    value: float
     created_at: str
     updated_at: str
 

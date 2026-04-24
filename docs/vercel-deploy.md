@@ -43,10 +43,18 @@ The current schema includes:
 - `user_profiles`
 - `food_products`
 - `daily_targets`
+- `daily_metrics`
 - `daily_meals`
 - `meal_items`
 - `activity_entries`
 - `memory_items`
+
+Product rows include an internal `usage_count` that starts at `0` and
+increments when a product-backed meal item is added successfully.
+
+The app can create additive schema changes on first successful connection when
+the database role has DDL permission. If not, apply the new SQL block from
+`docker/postgres/init/001_schema.sql` manually before deployment.
 
 If you use Supabase, get the connection string from:
 
@@ -58,6 +66,14 @@ If you use Supabase, get the connection string from:
 
 If you do not have the password anymore, reset it from **Database → Settings**
 in the Supabase project first.
+
+For existing databases, the app bootstrap can add the current usage-count
+column automatically. You can also apply it manually in Supabase before deploy:
+
+```sql
+ALTER TABLE food_products
+ADD COLUMN IF NOT EXISTS usage_count INTEGER NOT NULL DEFAULT 0;
+```
 
 ## Local bearer-token mode
 
@@ -176,6 +192,7 @@ https://<your-stable-production-domain>/mcp
 - `user_data(operation="get")`
 - `products(operation="add", ...)`
 - `daily_targets(operation="set", ...)`
+- `daily_metrics(operation="set", metric_type="weight", ...)`
 - `meals(operation="add", ...)`
 - `meal_items(operation="add", ...)`
 - `activities(operation="add", ...)`
@@ -197,8 +214,8 @@ Use this checklist when you want to make the Vercel deployment reachable by Clau
 7. Add the connector in `claude.ai`.
 8. Complete the OAuth flow.
 9. Call `whoami` first to confirm the remote identity is correct.
-10. Verify at least one document write, one tabular write, and one collection
-    write round-trip successfully.
+10. Verify at least one document write, one tabular write, one daily metric
+    write, and one collection write round-trip successfully.
 
 If you change the published MCP tool surface or authentication behavior, remove and re-add the Claude connector or reconnect it so Claude refreshes its tokens and tool schema.
 

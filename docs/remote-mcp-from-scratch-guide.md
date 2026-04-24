@@ -283,6 +283,7 @@ After connection, test:
 - `user_data(operation="get")`
 - `products(operation="add", ...)`
 - `daily_targets(operation="set", ...)`
+- `daily_metrics(operation="set", metric_type="weight", ...)`
 - `meals(operation="add", ...)`
 - `meal_items(operation="add", ...)`
 - `activities(operation="add", ...)`

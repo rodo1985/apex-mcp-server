@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 
 import httpx
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
 from apex_mcp_server.config import Settings
 from apex_mcp_server.models import ProfileSaveResult, UserData, UserDataSaveResult
@@ -40,6 +42,7 @@ class InMemoryUserStore(UserStore):
         self.user_rows: dict[str, dict[str, object]] = {}
         self.products: dict[str, dict[int, dict[str, object]]] = {}
         self.daily_targets: dict[str, dict[str, dict[str, object]]] = {}
+        self.daily_metrics: dict[str, dict[str, dict[str, object]]] = {}
         self.meals: dict[str, dict[int, dict[str, object]]] = {}
         self.meal_items: dict[str, dict[int, dict[str, object]]] = {}
         self.activities: dict[str, dict[int, dict[str, object]]] = {}
@@ -47,6 +50,7 @@ class InMemoryUserStore(UserStore):
         self._counters = {
             "product": 0,
             "target": 0,
+            "metric": 0,
             "meal": 0,
             "meal_item": 0,
             "activity": 0,
@@ -302,6 +306,62 @@ class InMemoryUserStore(UserStore):
             "fat_g": round(float(fat_g), 2),
         }
 
+    def _normalize_metric_type(self, metric_type: str) -> str:
+        """Normalize and validate one daily metric type.
+
+        Parameters:
+            metric_type: Caller-provided metric type string.
+
+        Returns:
+            str: Normalized metric type used by fake storage.
+
+        Raises:
+            ValueError: If the metric type is unsupported.
+        """
+
+        normalized_type = metric_type.strip().lower()
+        if normalized_type not in {"weight", "steps", "sleep_hours"}:
+            raise ValueError(
+                f"Unsupported metric_type '{metric_type}'. "
+                "Supported metric types: sleep_hours, steps, weight."
+            )
+        return normalized_type
+
+    def _validate_metric_value(self, metric_type: str, value: object) -> float:
+        """Validate a fake daily metric value with production-like rules.
+
+        Parameters:
+            metric_type: Normalized supported metric type.
+            value: Caller-provided numeric value.
+
+        Returns:
+            float: Normalized metric value.
+
+        Raises:
+            ValueError: If the value is non-finite or out of range.
+        """
+
+        if isinstance(value, bool):
+            raise ValueError("value must be a finite number.")
+
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("value must be a finite number.") from exc
+
+        if not isfinite(numeric_value):
+            raise ValueError("value must be a finite number.")
+        if metric_type == "weight" and numeric_value <= 0:
+            raise ValueError("weight value must be greater than 0.")
+        if metric_type == "steps":
+            if numeric_value < 0 or not numeric_value.is_integer():
+                raise ValueError(
+                    "steps value must be a whole number greater than or equal to 0."
+                )
+        if metric_type == "sleep_hours" and not 0 <= numeric_value <= 24:
+            raise ValueError("sleep_hours value must be between 0 and 24.")
+        return numeric_value
+
     async def get_profile(self, subject: str) -> str:
         """Return the stored profile markdown for a subject."""
 
@@ -440,7 +500,21 @@ class InMemoryUserStore(UserStore):
         fat_g_per_100g: float,
         notes_markdown: str = "",
     ) -> dict[str, object]:
-        """Create one food product for a subject."""
+        """Create one food product for a subject with zero usage.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            name: Product display name.
+            default_serving_g: Optional common serving size in grams.
+            calories_per_100g: Calories per 100 grams.
+            carbs_g_per_100g: Carbohydrates per 100 grams.
+            protein_g_per_100g: Protein per 100 grams.
+            fat_g_per_100g: Fat per 100 grams.
+            notes_markdown: Optional freeform product notes.
+
+        Returns:
+            dict[str, object]: Created in-memory product row.
+        """
 
         now = self._timestamp()
         product_id = self._next_id("product")
@@ -453,6 +527,7 @@ class InMemoryUserStore(UserStore):
             "carbs_g_per_100g": carbs_g_per_100g,
             "protein_g_per_100g": protein_g_per_100g,
             "fat_g_per_100g": fat_g_per_100g,
+            "usage_count": 0,
             "notes_markdown": notes_markdown,
             "created_at": now,
             "updated_at": now,
@@ -586,6 +661,152 @@ class InMemoryUserStore(UserStore):
         )
         return {"deleted": deleted is not None, "target_date": target_date}
 
+    async def list_daily_metrics(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        metric_type: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List daily metrics owned by one subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            date_from: Optional inclusive lower ISO date bound.
+            date_to: Optional inclusive upper ISO date bound.
+            metric_type: Optional supported metric type filter.
+
+        Returns:
+            list[dict[str, object]]: Copied fake metric rows.
+
+        Raises:
+            ValueError: If the metric type is unsupported.
+        """
+
+        normalized_type = (
+            None if metric_type is None else self._normalize_metric_type(metric_type)
+        )
+        rows = []
+        for metric in self._subject_date_bucket(self.daily_metrics, subject).values():
+            metric_date = str(metric["metric_date"])
+            if date_from is not None and metric_date < date_from:
+                continue
+            if date_to is not None and metric_date > date_to:
+                continue
+            if normalized_type is not None and metric["metric_type"] != normalized_type:
+                continue
+            rows.append(metric)
+
+        rows.sort(
+            key=lambda row: (
+                str(row["metric_date"]),
+                str(row["metric_type"]),
+                int(row["id"]),
+            ),
+            reverse=True,
+        )
+        return self._copy(rows)
+
+    async def get_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+    ) -> dict[str, object] | None:
+        """Return one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric.
+            metric_type: Supported metric type to read.
+
+        Returns:
+            dict[str, object] | None: Copied metric row, or `None` when missing.
+
+        Raises:
+            ValueError: If the metric type is unsupported.
+        """
+
+        normalized_type = self._normalize_metric_type(metric_type)
+        key = f"{metric_date}:{normalized_type}"
+        row = self._subject_date_bucket(self.daily_metrics, subject).get(key)
+        return self._copy(row) if row is not None else None
+
+    async def set_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+        value: float,
+    ) -> dict[str, object]:
+        """Create or replace one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric.
+            metric_type: Supported metric type to store.
+            value: Numeric metric value validated by metric type.
+
+        Returns:
+            dict[str, object]: Copied upserted metric row.
+
+        Raises:
+            ValueError: If the metric type or value is invalid.
+        """
+
+        normalized_type = self._normalize_metric_type(metric_type)
+        normalized_value = self._validate_metric_value(normalized_type, value)
+        bucket = self._subject_date_bucket(self.daily_metrics, subject)
+        key = f"{metric_date}:{normalized_type}"
+        row = bucket.get(key)
+        now = self._timestamp()
+        if row is None:
+            row = {
+                "id": self._next_id("metric"),
+                "subject": subject,
+                "metric_date": metric_date,
+                "metric_type": normalized_type,
+                "created_at": now,
+            }
+            bucket[key] = row
+
+        row.update(
+            {
+                "value": normalized_value,
+                "updated_at": now,
+            }
+        )
+        return self._copy(row)
+
+    async def delete_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+    ) -> dict[str, object]:
+        """Delete one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric row.
+            metric_type: Supported metric type to delete.
+
+        Returns:
+            dict[str, object]: Deletion metadata.
+
+        Raises:
+            ValueError: If the metric type is unsupported.
+        """
+
+        normalized_type = self._normalize_metric_type(metric_type)
+        key = f"{metric_date}:{normalized_type}"
+        deleted = self._subject_date_bucket(self.daily_metrics, subject).pop(key, None)
+        return {
+            "deleted": deleted is not None,
+            "metric_date": metric_date,
+            "metric_type": normalized_type,
+        }
+
     async def list_daily_meals(
         self,
         subject: str,
@@ -703,7 +924,27 @@ class InMemoryUserStore(UserStore):
         protein_g: float | None = None,
         fat_g: float | None = None,
     ) -> dict[str, object]:
-        """Create one meal item for a subject."""
+        """Create one meal item and update product usage for successful adds.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            meal_id: Parent meal identifier.
+            grams: Consumed grams for the meal item.
+            ingredient_name: Free-text ingredient name for manual items or
+                optional custom label for catalog-based items.
+            product_id: Optional catalog product identifier.
+            calories: Manual calories for non-catalog items.
+            carbs_g: Manual carbohydrate grams for non-catalog items.
+            protein_g: Manual protein grams for non-catalog items.
+            fat_g: Manual fat grams for non-catalog items.
+
+        Returns:
+            dict[str, object]: Created in-memory meal item row.
+
+        Raises:
+            RuntimeError: If the meal or referenced product is invalid.
+            ValueError: If the meal item data is incomplete or invalid.
+        """
 
         self._get_meal_row(subject, meal_id)
         snapshot = self._build_meal_item_snapshot(
@@ -733,6 +974,12 @@ class InMemoryUserStore(UserStore):
             "updated_at": now,
         }
         self._subject_bucket(self.meal_items, subject)[meal_item_id] = row
+        if product_id is not None:
+            # Mirror the Postgres store: usage_count is internal bookkeeping for
+            # successful product-backed additions, not a caller-managed field.
+            product = self._get_product_row(subject, product_id)
+            product["usage_count"] = int(product.get("usage_count", 0)) + 1
+
         return self._copy(row)
 
     async def update_meal_item(
@@ -1478,6 +1725,55 @@ async def test_server_tools_cover_singletons_collections_and_summary(
             {"operation": "get", "target_date": "2026-04-14"},
         )
 
+        daily_metric = await client.call_tool(
+            "daily_metrics",
+            {
+                "operation": "set",
+                "metric_date": "2026-04-14",
+                "metric_type": " Weight ",
+                "value": 68.5,
+            },
+        )
+        daily_metric_data = as_mapping(daily_metric.data)["item"]
+        updated_daily_metric = await client.call_tool(
+            "daily_metrics",
+            {
+                "operation": "set",
+                "metric_date": "2026-04-14",
+                "metric_type": "weight",
+                "value": 69.0,
+            },
+        )
+        await client.call_tool(
+            "daily_metrics",
+            {
+                "operation": "set",
+                "metric_date": "2026-04-14",
+                "metric_type": "steps",
+                "value": 12000.0,
+            },
+        )
+        listed_daily_metrics = await client.call_tool(
+            "daily_metrics",
+            {
+                "operation": "list",
+                "date_from": "2026-04-14",
+                "date_to": "2026-04-14",
+            },
+        )
+        listed_weight_metrics = await client.call_tool(
+            "daily_metrics",
+            {"operation": "list", "metric_type": "weight"},
+        )
+        loaded_daily_metric = await client.call_tool(
+            "daily_metrics",
+            {
+                "operation": "get",
+                "metric_date": "2026-04-14",
+                "metric_type": "WEIGHT",
+            },
+        )
+
         meal = await client.call_tool(
             "meals",
             {
@@ -1517,6 +1813,14 @@ async def test_server_tools_cover_singletons_collections_and_summary(
             },
         )
         meal_item_data = as_mapping(meal_item.data)["item"]
+        product_after_meal_item = await client.call_tool(
+            "products",
+            {"operation": "get", "product_id": product_data["id"]},
+        )
+        products_after_meal_item = await client.call_tool(
+            "products",
+            {"operation": "list"},
+        )
         listed_meal_items = await client.call_tool(
             "meal_items",
             {"operation": "list", "meal_id": meal_data["id"]},
@@ -1646,6 +1950,14 @@ async def test_server_tools_cover_singletons_collections_and_summary(
             "daily_targets",
             {"operation": "delete", "target_date": "2026-04-14"},
         )
+        deleted_daily_metric = await client.call_tool(
+            "daily_metrics",
+            {
+                "operation": "delete",
+                "metric_date": "2026-04-14",
+                "metric_type": "weight",
+            },
+        )
         deleted_activity = await client.call_tool(
             "activities",
             {"operation": "delete", "activity_id": activity_data["id"]},
@@ -1662,8 +1974,14 @@ async def test_server_tools_cover_singletons_collections_and_summary(
     listed_products_data = as_mapping(listed_products.data)["items"]
     loaded_product_data = as_mapping(loaded_product.data)["item"]
     updated_product_data = as_mapping(updated_product.data)["item"]
+    product_after_meal_item_data = as_mapping(product_after_meal_item.data)["item"]
+    products_after_meal_item_data = as_mapping(products_after_meal_item.data)["items"]
     listed_targets_data = as_mapping(listed_targets.data)["items"]
     loaded_target_data = as_mapping(loaded_target.data)["item"]
+    updated_daily_metric_data = as_mapping(updated_daily_metric.data)["item"]
+    listed_daily_metrics_data = as_mapping(listed_daily_metrics.data)["items"]
+    listed_weight_metrics_data = as_mapping(listed_weight_metrics.data)["items"]
+    loaded_daily_metric_data = as_mapping(loaded_daily_metric.data)["item"]
     listed_meals_data = as_mapping(listed_meals.data)["items"]
     loaded_meal_data = as_mapping(loaded_meal.data)["item"]
     updated_meal_data = as_mapping(updated_meal.data)["item"]
@@ -1689,6 +2007,7 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         "user_data",
         "products",
         "daily_targets",
+        "daily_metrics",
         "meals",
         "meal_items",
         "activities",
@@ -1726,11 +2045,26 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         == "Build FTP and keep long rides consistent."
     )
     assert listed_products_data[0]["name"] == "Oats"
+    assert product_data["usage_count"] == 0
+    assert listed_products_data[0]["usage_count"] == 0
     assert loaded_product_data["name"] == "Oats"
+    assert loaded_product_data["usage_count"] == 0
     assert updated_product_data["name"] == "Rolled oats"
+    assert updated_product_data["usage_count"] == 0
+    assert product_after_meal_item_data["usage_count"] == 1
+    assert products_after_meal_item_data[0]["usage_count"] == 1
     assert daily_target_data["target_date"] == "2026-04-14"
     assert listed_targets_data[0]["target_date"] == "2026-04-14"
     assert loaded_target_data["target_food_calories"] == 2200.0
+    assert updated_daily_metric_data["id"] == daily_metric_data["id"]
+    assert updated_daily_metric_data["metric_type"] == "weight"
+    assert updated_daily_metric_data["value"] == 69.0
+    assert {item["metric_type"] for item in listed_daily_metrics_data} == {
+        "steps",
+        "weight",
+    }
+    assert listed_weight_metrics_data[0]["value"] == 69.0
+    assert loaded_daily_metric_data["value"] == 69.0
     assert listed_meals_data[0]["meal_label"] == "Breakfast"
     assert loaded_meal_data["meal_label"] == "Breakfast"
     assert updated_meal_data["meal_label"] == "Breakfast updated"
@@ -1775,6 +2109,12 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         "deleted": True,
         "target_date": "2026-04-14",
     }
+    assert as_mapping(deleted_daily_metric.data) == {
+        "operation": "delete",
+        "deleted": True,
+        "metric_date": "2026-04-14",
+        "metric_type": "weight",
+    }
     assert as_mapping(deleted_activity.data) == {
         "operation": "delete",
         "deleted": True,
@@ -1790,6 +2130,48 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         "deleted": True,
         "product_id": product_data["id"],
     }
+
+
+@pytest.mark.asyncio
+async def test_daily_metrics_tool_reports_validation_errors(
+    no_auth_settings: Settings,
+) -> None:
+    """Ensure invalid daily metric calls surface clear tool errors.
+
+    Parameters:
+        no_auth_settings: Local test settings.
+
+    Returns:
+        None.
+    """
+
+    server = create_mcp_server(
+        settings=no_auth_settings,
+        store=InMemoryUserStore(),
+    )
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="Unsupported metric_type"):
+            await client.call_tool(
+                "daily_metrics",
+                {
+                    "operation": "set",
+                    "metric_date": "2026-04-14",
+                    "metric_type": "mood",
+                    "value": 5.0,
+                },
+            )
+
+        with pytest.raises(ToolError, match="steps value must be a whole number"):
+            await client.call_tool(
+                "daily_metrics",
+                {
+                    "operation": "set",
+                    "metric_date": "2026-04-14",
+                    "metric_type": "steps",
+                    "value": 123.5,
+                },
+            )
 
 
 @pytest.mark.asyncio

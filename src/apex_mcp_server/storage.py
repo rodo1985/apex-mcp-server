@@ -6,11 +6,14 @@ import asyncio
 import json
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+from math import isfinite
 
 import asyncpg
 
 from apex_mcp_server.config import Settings
 from apex_mcp_server.models import ProfileSaveResult, UserData, UserDataSaveResult
+
+DAILY_METRIC_TYPES = frozenset({"weight", "steps", "sleep_hours"})
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS user_profiles (
@@ -38,11 +41,15 @@ CREATE TABLE IF NOT EXISTS food_products (
     carbs_g_per_100g DOUBLE PRECISION NOT NULL,
     protein_g_per_100g DOUBLE PRECISION NOT NULL,
     fat_g_per_100g DOUBLE PRECISION NOT NULL,
+    usage_count INTEGER NOT NULL DEFAULT 0,
     notes_markdown TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (subject, name)
 );
+
+ALTER TABLE food_products
+    ADD COLUMN IF NOT EXISTS usage_count INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_food_products_subject_name
     ON food_products (subject, name);
@@ -64,6 +71,20 @@ CREATE TABLE IF NOT EXISTS daily_targets (
 
 CREATE INDEX IF NOT EXISTS idx_daily_targets_subject_date
     ON daily_targets (subject, target_date);
+
+CREATE TABLE IF NOT EXISTS daily_metrics (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    metric_date DATE NOT NULL,
+    metric_type TEXT NOT NULL,
+    value DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (subject, metric_date, metric_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_metrics_subject_type_date
+    ON daily_metrics (subject, metric_type, metric_date DESC);
 
 CREATE TABLE IF NOT EXISTS daily_meals (
     id BIGSERIAL PRIMARY KEY,
@@ -333,6 +354,98 @@ class UserStore(ABC):
         target_date: str,
     ) -> dict[str, object]:
         """Delete one daily target row for a subject and date."""
+
+    @abstractmethod
+    async def list_daily_metrics(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        metric_type: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List daily metric rows for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            date_from: Optional inclusive lower ISO date bound.
+            date_to: Optional inclusive upper ISO date bound.
+            metric_type: Optional supported metric type filter.
+
+        Returns:
+            list[dict[str, object]]: Metric rows visible to the subject.
+
+        Raises:
+            ValueError: If a provided filter is invalid.
+            Exception: Propagated from the concrete storage backend.
+        """
+
+    @abstractmethod
+    async def get_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+    ) -> dict[str, object] | None:
+        """Read one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the requested metric.
+            metric_type: Supported metric type to read.
+
+        Returns:
+            dict[str, object] | None: Metric row, or `None` when missing.
+
+        Raises:
+            ValueError: If the date or metric type is invalid.
+            Exception: Propagated from the concrete storage backend.
+        """
+
+    @abstractmethod
+    async def set_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+        value: float,
+    ) -> dict[str, object]:
+        """Upsert one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric.
+            metric_type: Supported metric type to store.
+            value: Numeric metric value validated by metric type.
+
+        Returns:
+            dict[str, object]: Upserted metric row.
+
+        Raises:
+            ValueError: If the date, metric type, or value is invalid.
+            Exception: Propagated from the concrete storage backend.
+        """
+
+    @abstractmethod
+    async def delete_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+    ) -> dict[str, object]:
+        """Delete one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric row.
+            metric_type: Supported metric type to delete.
+
+        Returns:
+            dict[str, object]: Deletion metadata.
+
+        Raises:
+            ValueError: If the date or metric type is invalid.
+            Exception: Propagated from the concrete storage backend.
+        """
 
     @abstractmethod
     async def list_daily_meals(
@@ -891,6 +1004,7 @@ class PostgresUserStore(UserStore):
             """
             SELECT id, subject, name, default_serving_g, calories_per_100g,
                    carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                   COALESCE(usage_count, 0)::INTEGER AS usage_count,
                    notes_markdown, created_at, updated_at
             FROM food_products
             WHERE subject = $1
@@ -922,6 +1036,7 @@ class PostgresUserStore(UserStore):
             """
             SELECT id, subject, name, default_serving_g, calories_per_100g,
                    carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                   COALESCE(usage_count, 0)::INTEGER AS usage_count,
                    notes_markdown, created_at, updated_at
             FROM food_products
             WHERE subject = $1 AND id = $2
@@ -971,6 +1086,7 @@ class PostgresUserStore(UserStore):
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, subject, name, default_serving_g, calories_per_100g,
                       carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                      COALESCE(usage_count, 0)::INTEGER AS usage_count,
                       notes_markdown, created_at, updated_at
             """,
             subject,
@@ -1034,6 +1150,7 @@ class PostgresUserStore(UserStore):
             WHERE subject = $1 AND id = $2
             RETURNING id, subject, name, default_serving_g, calories_per_100g,
                       carbs_g_per_100g, protein_g_per_100g, fat_g_per_100g,
+                      COALESCE(usage_count, 0)::INTEGER AS usage_count,
                       notes_markdown, created_at, updated_at
             """,
             subject,
@@ -1241,6 +1358,175 @@ class PostgresUserStore(UserStore):
         return {
             "deleted": command != "DELETE 0",
             "target_date": parsed_date.isoformat(),
+        }
+
+    async def list_daily_metrics(
+        self,
+        subject: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        metric_type: str | None = None,
+    ) -> list[dict[str, object]]:
+        """List daily metric rows for a subject.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            date_from: Optional inclusive lower ISO date bound.
+            date_to: Optional inclusive upper ISO date bound.
+            metric_type: Optional supported metric type filter.
+
+        Returns:
+            list[dict[str, object]]: Metric rows ordered for trend reading.
+
+        Raises:
+            ValueError: If `metric_type` or date filters are invalid.
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        filters = ["subject = $1"]
+        args: list[object] = [subject]
+
+        if date_from is not None:
+            args.append(_parse_iso_date(date_from))
+            filters.append(f"metric_date >= ${len(args)}")
+
+        if date_to is not None:
+            args.append(_parse_iso_date(date_to))
+            filters.append(f"metric_date <= ${len(args)}")
+
+        if metric_type is not None:
+            args.append(_normalize_daily_metric_type(metric_type))
+            filters.append(f"metric_type = ${len(args)}")
+
+        rows = await self._fetch(
+            f"""
+            SELECT id, subject, metric_date, metric_type, value,
+                   created_at, updated_at
+            FROM daily_metrics
+            WHERE {' AND '.join(filters)}
+            ORDER BY metric_date DESC, metric_type, id DESC
+            """,
+            *args,
+        )
+        return self._rows_to_dicts(rows)
+
+    async def get_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+    ) -> dict[str, object] | None:
+        """Read one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric.
+            metric_type: Supported metric type such as `weight`.
+
+        Returns:
+            dict[str, object] | None: Daily metric row, or `None` when missing.
+
+        Raises:
+            ValueError: If the date or metric type is invalid.
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT id, subject, metric_date, metric_type, value,
+                   created_at, updated_at
+            FROM daily_metrics
+            WHERE subject = $1 AND metric_date = $2 AND metric_type = $3
+            """,
+            subject,
+            _parse_iso_date(metric_date),
+            _normalize_daily_metric_type(metric_type),
+        )
+        return self._row_to_dict(row)
+
+    async def set_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+        value: float,
+    ) -> dict[str, object]:
+        """Upsert one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric.
+            metric_type: Supported metric type such as `steps`.
+            value: Numeric metric value validated for the requested type.
+
+        Returns:
+            dict[str, object]: Upserted daily metric row.
+
+        Raises:
+            ValueError: If the date, metric type, or value is invalid.
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        normalized_type = _normalize_daily_metric_type(metric_type)
+        normalized_value = _validate_daily_metric_value(normalized_type, value)
+
+        row = await self._fetchrow(
+            """
+            INSERT INTO daily_metrics (subject, metric_date, metric_type, value)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (subject, metric_date, metric_type) DO UPDATE
+            SET
+                value = EXCLUDED.value,
+                updated_at = NOW()
+            RETURNING id, subject, metric_date, metric_type, value,
+                      created_at, updated_at
+            """,
+            subject,
+            _parse_iso_date(metric_date),
+            normalized_type,
+            normalized_value,
+        )
+        return self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for daily_metrics.",
+        )
+
+    async def delete_daily_metric(
+        self,
+        subject: str,
+        metric_date: str,
+        metric_type: str,
+    ) -> dict[str, object]:
+        """Delete one daily metric row for a subject, date, and type.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            metric_date: ISO calendar date for the metric row.
+            metric_type: Supported metric type to delete.
+
+        Returns:
+            dict[str, object]: Deletion result with date and metric type.
+
+        Raises:
+            ValueError: If the date or metric type is invalid.
+            Exception: Propagated from asyncpg when the delete fails.
+        """
+
+        parsed_date = _parse_iso_date(metric_date)
+        normalized_type = _normalize_daily_metric_type(metric_type)
+        command = await self._execute(
+            """
+            DELETE FROM daily_metrics
+            WHERE subject = $1 AND metric_date = $2 AND metric_type = $3
+            """,
+            subject,
+            parsed_date,
+            normalized_type,
+        )
+        return {
+            "deleted": command != "DELETE 0",
+            "metric_date": parsed_date.isoformat(),
+            "metric_type": normalized_type,
         }
 
     async def list_daily_meals(
@@ -1477,7 +1763,9 @@ class PostgresUserStore(UserStore):
             fat_g: Manual fat grams for non-catalog items.
 
         Returns:
-            dict[str, object]: Newly created meal item row.
+            dict[str, object]: Newly created meal item row. Product-backed
+                additions also increment the referenced product's internal
+                `usage_count` in the same transaction.
 
         Raises:
             RuntimeError: If the meal or referenced product is invalid.
@@ -1485,42 +1773,63 @@ class PostgresUserStore(UserStore):
             Exception: Propagated from asyncpg when the insert fails.
         """
 
-        await self._require_meal(subject, meal_id)
-        snapshot = await self._build_meal_item_snapshot(
-            subject=subject,
-            product_id=product_id,
-            ingredient_name=ingredient_name,
-            grams=grams,
-            calories=calories,
-            carbs_g=carbs_g,
-            protein_g=protein_g,
-            fat_g=fat_g,
-        )
+        pool = await self._ensure_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await self._require_meal(subject, meal_id, connection=connection)
+                snapshot = await self._build_meal_item_snapshot(
+                    subject=subject,
+                    product_id=product_id,
+                    ingredient_name=ingredient_name,
+                    grams=grams,
+                    calories=calories,
+                    carbs_g=carbs_g,
+                    protein_g=protein_g,
+                    fat_g=fat_g,
+                    connection=connection,
+                )
 
-        row = await self._fetchrow(
-            """
-            INSERT INTO meal_items (
-                subject, meal_id, product_id, ingredient_name, grams,
-                calories, carbs_g, protein_g, fat_g
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id, subject, meal_id, product_id, ingredient_name, grams,
-                      calories, carbs_g, protein_g, fat_g, created_at, updated_at
-            """,
-            subject,
-            meal_id,
-            product_id,
-            snapshot["ingredient_name"],
-            grams,
-            snapshot["calories"],
-            snapshot["carbs_g"],
-            snapshot["protein_g"],
-            snapshot["fat_g"],
-        )
-        return self._require_row_dict(
-            row,
-            "Expected INSERT ... RETURNING for meal_items.",
-        )
+                row = await connection.fetchrow(
+                    """
+                    INSERT INTO meal_items (
+                        subject, meal_id, product_id, ingredient_name, grams,
+                        calories, carbs_g, protein_g, fat_g
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id, subject, meal_id, product_id, ingredient_name, grams,
+                              calories, carbs_g, protein_g, fat_g, created_at,
+                              updated_at
+                    """,
+                    subject,
+                    meal_id,
+                    product_id,
+                    snapshot["ingredient_name"],
+                    grams,
+                    snapshot["calories"],
+                    snapshot["carbs_g"],
+                    snapshot["protein_g"],
+                    snapshot["fat_g"],
+                )
+                payload = self._require_row_dict(
+                    row,
+                    "Expected INSERT ... RETURNING for meal_items.",
+                )
+
+                if product_id is not None:
+                    # The counter is a lifetime usage signal, so this internal
+                    # update intentionally avoids touching the product's
+                    # updated_at metadata.
+                    await connection.execute(
+                        """
+                        UPDATE food_products
+                        SET usage_count = COALESCE(usage_count, 0) + 1
+                        WHERE subject = $1 AND id = $2
+                        """,
+                        subject,
+                        product_id,
+                    )
+
+                return payload
 
     async def update_meal_item(
         self,
@@ -2499,12 +2808,15 @@ class PostgresUserStore(UserStore):
         self,
         subject: str,
         product_id: int,
+        connection: asyncpg.Connection | None = None,
     ) -> asyncpg.Record:
         """Load one product record and fail clearly when it is missing.
 
         Parameters:
             subject: Stable row owner for the current caller.
             product_id: Product identifier expected to belong to the subject.
+            connection: Optional active connection used to keep the lookup
+                inside a caller-managed transaction.
 
         Returns:
             asyncpg.Record: Product row used for nutrition snapshotting.
@@ -2514,16 +2826,17 @@ class PostgresUserStore(UserStore):
             Exception: Propagated from asyncpg when the query fails.
         """
 
-        row = await self._fetchrow(
-            """
+        query = """
             SELECT id, name, calories_per_100g, carbs_g_per_100g,
                    protein_g_per_100g, fat_g_per_100g
             FROM food_products
             WHERE subject = $1 AND id = $2
-            """,
-            subject,
-            product_id,
-        )
+            """
+        if connection is None:
+            row = await self._fetchrow(query, subject, product_id)
+        else:
+            row = await connection.fetchrow(query, subject, product_id)
+
         if row is None:
             raise RuntimeError(
                 f"Food product {product_id} was not found for the current user."
@@ -2534,12 +2847,15 @@ class PostgresUserStore(UserStore):
         self,
         subject: str,
         meal_id: int,
+        connection: asyncpg.Connection | None = None,
     ) -> asyncpg.Record | None:
         """Load one meal header row for the current subject.
 
         Parameters:
             subject: Stable row owner for the current caller.
             meal_id: Meal identifier to fetch.
+            connection: Optional active connection used to keep the lookup
+                inside a caller-managed transaction.
 
         Returns:
             asyncpg.Record | None: Meal row, or `None` when missing.
@@ -2548,23 +2864,29 @@ class PostgresUserStore(UserStore):
             Exception: Propagated from asyncpg when the query fails.
         """
 
-        return await self._fetchrow(
-            """
+        query = """
             SELECT id, subject, meal_date, meal_label, notes_markdown,
                    created_at, updated_at
             FROM daily_meals
             WHERE subject = $1 AND id = $2
-            """,
-            subject,
-            meal_id,
-        )
+            """
+        if connection is None:
+            return await self._fetchrow(query, subject, meal_id)
+        return await connection.fetchrow(query, subject, meal_id)
 
-    async def _require_meal(self, subject: str, meal_id: int) -> asyncpg.Record:
+    async def _require_meal(
+        self,
+        subject: str,
+        meal_id: int,
+        connection: asyncpg.Connection | None = None,
+    ) -> asyncpg.Record:
         """Load one meal header and fail clearly when it is missing.
 
         Parameters:
             subject: Stable row owner for the current caller.
             meal_id: Meal identifier expected to belong to the subject.
+            connection: Optional active connection used to keep the lookup
+                inside a caller-managed transaction.
 
         Returns:
             asyncpg.Record: Meal row owned by the current subject.
@@ -2574,7 +2896,7 @@ class PostgresUserStore(UserStore):
             Exception: Propagated from asyncpg when the query fails.
         """
 
-        row = await self._fetch_meal(subject, meal_id)
+        row = await self._fetch_meal(subject, meal_id, connection=connection)
         if row is None:
             raise RuntimeError(f"Meal {meal_id} was not found for the current user.")
         return row
@@ -2589,6 +2911,7 @@ class PostgresUserStore(UserStore):
         carbs_g: float | None,
         protein_g: float | None,
         fat_g: float | None,
+        connection: asyncpg.Connection | None = None,
     ) -> dict[str, object]:
         """Build the stored nutrition snapshot for a meal item.
 
@@ -2602,6 +2925,8 @@ class PostgresUserStore(UserStore):
             carbs_g: Manual carbohydrate grams for non-catalog items.
             protein_g: Manual protein grams for non-catalog items.
             fat_g: Manual fat grams for non-catalog items.
+            connection: Optional active connection used to keep product lookup
+                inside a caller-managed transaction.
 
         Returns:
             dict[str, object]: Snapshot fields ready for insertion or update.
@@ -2616,7 +2941,11 @@ class PostgresUserStore(UserStore):
             raise ValueError("grams must be greater than 0.")
 
         if product_id is not None:
-            product_row = await self._fetch_product_record(subject, product_id)
+            product_row = await self._fetch_product_record(
+                subject,
+                product_id,
+                connection=connection,
+            )
             resolved_name = ingredient_name.strip() if ingredient_name else ""
             if not resolved_name:
                 resolved_name = str(product_row["name"])
@@ -2744,6 +3073,69 @@ def _parse_iso_date(value: str) -> date:
     """
 
     return date.fromisoformat(value)
+
+
+def _normalize_daily_metric_type(metric_type: str) -> str:
+    """Normalize and validate a supported daily metric type.
+
+    Parameters:
+        metric_type: Caller-provided metric type string.
+
+    Returns:
+        str: Normalized metric type used in storage and responses.
+
+    Raises:
+        ValueError: If the metric type is empty or unsupported.
+    """
+
+    normalized_type = metric_type.strip().lower()
+    if normalized_type not in DAILY_METRIC_TYPES:
+        supported = ", ".join(sorted(DAILY_METRIC_TYPES))
+        raise ValueError(
+            f"Unsupported metric_type '{metric_type}'. "
+            f"Supported metric types: {supported}."
+        )
+    return normalized_type
+
+
+def _validate_daily_metric_value(metric_type: str, value: object) -> float:
+    """Validate one daily metric value using type-specific pilot rules.
+
+    Parameters:
+        metric_type: Normalized supported metric type.
+        value: Caller-provided numeric value.
+
+    Returns:
+        float: Normalized value to store in Postgres.
+
+    Raises:
+        ValueError: If the value is non-numeric, non-finite, or out of range.
+    """
+
+    if isinstance(value, bool):
+        raise ValueError("value must be a finite number.")
+
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("value must be a finite number.") from exc
+
+    if not isfinite(numeric_value):
+        raise ValueError("value must be a finite number.")
+
+    if metric_type == "weight" and numeric_value <= 0:
+        raise ValueError("weight value must be greater than 0.")
+
+    if metric_type == "steps":
+        if numeric_value < 0 or not numeric_value.is_integer():
+            raise ValueError(
+                "steps value must be a whole number greater than or equal to 0."
+            )
+
+    if metric_type == "sleep_hours" and not 0 <= numeric_value <= 24:
+        raise ValueError("sleep_hours value must be between 0 and 24.")
+
+    return numeric_value
 
 
 def _scaled_metric(per_100g: object, grams: float) -> float:

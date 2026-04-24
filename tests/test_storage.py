@@ -39,6 +39,8 @@ class _FakeConnection:
 
         assert "CREATE TABLE IF NOT EXISTS user_profiles" in query
         assert "CREATE TABLE IF NOT EXISTS food_products" in query
+        assert "usage_count INTEGER NOT NULL DEFAULT 0" in query
+        assert "CREATE TABLE IF NOT EXISTS daily_metrics" in query
         assert "CREATE TABLE IF NOT EXISTS memory_items" in query
         return "EXECUTE"
 
@@ -304,10 +306,15 @@ async def test_postgres_store_products_support_crud_and_unique_names(
     delete_result = await postgres_store.delete_product(subject, int(product["id"]))
 
     assert product["name"] == "Oats"
+    assert product["usage_count"] == 0
     assert listed_products[0]["id"] == product["id"]
+    assert listed_products[0]["usage_count"] == 0
     assert loaded_product is not None and loaded_product["name"] == "Oats"
+    assert loaded_product["usage_count"] == 0
     assert updated_product is not None and updated_product["name"] == "Rolled oats"
+    assert updated_product["usage_count"] == 0
     assert other_product["name"] == "Rolled oats"
+    assert other_product["usage_count"] == 0
     assert foreign_lookup is None
     assert delete_result == {"deleted": True, "product_id": int(product["id"])}
 
@@ -357,6 +364,149 @@ async def test_postgres_store_daily_targets_are_upserted_per_user_and_day(
     assert loaded_target["target_food_calories"] == 2300.0
     assert loaded_target["target_exercise_calories"] == 650.0
     assert loaded_target["notes_markdown"] == "Long ride adjustment"
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_daily_metrics_are_upserted_per_user_day_and_type(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure daily metrics use one row per user, day, and metric type.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("metrics")
+    other_subject = make_subject("metrics-other")
+
+    first_weight = await postgres_store.set_daily_metric(
+        subject,
+        metric_date="2026-04-14",
+        metric_type=" Weight ",
+        value=68.5,
+    )
+    updated_weight = await postgres_store.set_daily_metric(
+        subject,
+        metric_date="2026-04-14",
+        metric_type="weight",
+        value=69.0,
+    )
+    steps = await postgres_store.set_daily_metric(
+        subject,
+        metric_date="2026-04-14",
+        metric_type="steps",
+        value=12000.0,
+    )
+    sleep = await postgres_store.set_daily_metric(
+        subject,
+        metric_date="2026-04-15",
+        metric_type="sleep_hours",
+        value=7.5,
+    )
+
+    loaded_weight = await postgres_store.get_daily_metric(
+        subject,
+        "2026-04-14",
+        "WEIGHT",
+    )
+    foreign_weight = await postgres_store.get_daily_metric(
+        other_subject,
+        "2026-04-14",
+        "weight",
+    )
+    listed_range = await postgres_store.list_daily_metrics(
+        subject,
+        date_from="2026-04-14",
+        date_to="2026-04-14",
+    )
+    listed_weight = await postgres_store.list_daily_metrics(
+        subject,
+        metric_type="weight",
+    )
+    deleted_sleep = await postgres_store.delete_daily_metric(
+        subject,
+        "2026-04-15",
+        "sleep_hours",
+    )
+
+    assert first_weight["id"] == updated_weight["id"]
+    assert steps["id"] != updated_weight["id"]
+    assert sleep["metric_date"] == "2026-04-15"
+    assert loaded_weight is not None
+    assert loaded_weight["metric_type"] == "weight"
+    assert loaded_weight["value"] == 69.0
+    assert foreign_weight is None
+    assert {item["metric_type"] for item in listed_range} == {"steps", "weight"}
+    assert len(listed_weight) == 1
+    assert listed_weight[0]["value"] == 69.0
+    assert deleted_sleep == {
+        "deleted": True,
+        "metric_date": "2026-04-15",
+        "metric_type": "sleep_hours",
+    }
+    assert (
+        await postgres_store.get_daily_metric(subject, "2026-04-15", "sleep_hours")
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_daily_metric_validation_is_clear(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure daily metric type and value validation raises clear errors.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("metric-validation")
+
+    with pytest.raises(ValueError, match="Unsupported metric_type"):
+        await postgres_store.set_daily_metric(
+            subject,
+            metric_date="2026-04-14",
+            metric_type="mood",
+            value=3.0,
+        )
+
+    with pytest.raises(ValueError, match="weight value must be greater than 0"):
+        await postgres_store.set_daily_metric(
+            subject,
+            metric_date="2026-04-14",
+            metric_type="weight",
+            value=-1.0,
+        )
+
+    with pytest.raises(ValueError, match="steps value must be a whole number"):
+        await postgres_store.set_daily_metric(
+            subject,
+            metric_date="2026-04-14",
+            metric_type="steps",
+            value=12.5,
+        )
+
+    with pytest.raises(ValueError, match="sleep_hours value must be between 0 and 24"):
+        await postgres_store.set_daily_metric(
+            subject,
+            metric_date="2026-04-14",
+            metric_type="sleep_hours",
+            value=24.5,
+        )
+
+    with pytest.raises(ValueError, match="value must be a finite number"):
+        await postgres_store.set_daily_metric(
+            subject,
+            metric_date="2026-04-14",
+            metric_type="weight",
+            value=float("nan"),
+        )
 
 
 @pytest.mark.asyncio
@@ -464,6 +614,106 @@ async def test_postgres_store_meals_and_items_keep_historical_nutrition_snapshot
         "meal_item_id": int(manual_item["id"]),
     }
     assert deleted_meal == {"deleted": True, "meal_id": int(meal["id"])}
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_meal_item_add_increments_product_usage_count(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure product usage count changes only for successful item additions.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("product-usage")
+
+    product = await postgres_store.add_product(
+        subject,
+        name="Greek yogurt",
+        default_serving_g=170.0,
+        calories_per_100g=59.0,
+        carbs_g_per_100g=3.6,
+        protein_g_per_100g=10.0,
+        fat_g_per_100g=0.4,
+    )
+    meal = await postgres_store.add_meal(
+        subject,
+        meal_date="2026-04-15",
+        meal_label="Snack",
+    )
+
+    loaded_product = await postgres_store.get_product(subject, int(product["id"]))
+    assert loaded_product is not None
+    assert loaded_product["usage_count"] == 0
+
+    with pytest.raises(ValueError):
+        await postgres_store.add_meal_item(
+            subject,
+            meal_id=int(meal["id"]),
+            product_id=int(product["id"]),
+            grams=0.0,
+        )
+
+    loaded_after_invalid = await postgres_store.get_product(
+        subject,
+        int(product["id"]),
+    )
+    assert loaded_after_invalid is not None
+    assert loaded_after_invalid["usage_count"] == 0
+
+    first_item = await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(meal["id"]),
+        product_id=int(product["id"]),
+        grams=170.0,
+    )
+    loaded_after_first_add = await postgres_store.get_product(
+        subject,
+        int(product["id"]),
+    )
+    assert loaded_after_first_add is not None
+    assert loaded_after_first_add["usage_count"] == 1
+
+    await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(meal["id"]),
+        grams=20.0,
+        ingredient_name="Honey",
+        calories=61.0,
+        carbs_g=17.0,
+        protein_g=0.0,
+        fat_g=0.0,
+    )
+    loaded_after_manual_add = await postgres_store.get_product(
+        subject,
+        int(product["id"]),
+    )
+    assert loaded_after_manual_add is not None
+    assert loaded_after_manual_add["usage_count"] == 1
+
+    await postgres_store.add_meal_item(
+        subject,
+        meal_id=int(meal["id"]),
+        product_id=int(product["id"]),
+        grams=100.0,
+    )
+    listed_after_second_add = await postgres_store.list_products(subject)
+    assert listed_after_second_add[0]["usage_count"] == 2
+
+    await postgres_store.update_meal_item(
+        subject,
+        meal_item_id=int(first_item["id"]),
+        meal_id=int(meal["id"]),
+        product_id=int(product["id"]),
+        grams=200.0,
+    )
+    loaded_after_update = await postgres_store.get_product(subject, int(product["id"]))
+    assert loaded_after_update is not None
+    assert loaded_after_update["usage_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -816,6 +1066,12 @@ async def test_postgres_store_subject_scoping_hides_other_users_rows(
         target_carbs_g=240.0,
         target_fat_g=55.0,
     )
+    await postgres_store.set_daily_metric(
+        subject_a,
+        metric_date="2026-04-14",
+        metric_type="weight",
+        value=70.0,
+    )
 
     assert await postgres_store.get_product(subject_b, int(product["id"])) is None
     assert await postgres_store.get_meal(subject_b, int(meal["id"])) is None
@@ -827,8 +1083,13 @@ async def test_postgres_store_subject_scoping_hides_other_users_rows(
         is None
     )
     assert await postgres_store.get_daily_target(subject_b, "2026-04-14") is None
+    assert (
+        await postgres_store.get_daily_metric(subject_b, "2026-04-14", "weight")
+        is None
+    )
     assert await postgres_store.list_products(subject_b) == []
     assert await postgres_store.list_activities(subject_b) == []
+    assert await postgres_store.list_daily_metrics(subject_b) == []
     assert await postgres_store.list_memory_items(subject_b) == []
 
 

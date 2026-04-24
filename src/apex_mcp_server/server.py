@@ -20,6 +20,7 @@ DocumentOperation = Literal["get", "set"]
 UserDataOperation = Literal["get", "set"]
 ProductOperation = Literal["list", "get", "add", "update", "delete"]
 DailyTargetOperation = Literal["list", "get", "set", "delete"]
+DailyMetricOperation = Literal["list", "get", "set", "delete"]
 MealOperation = Literal["list", "get", "add", "update", "delete"]
 MealItemOperation = Literal["list", "add", "update", "delete"]
 ActivityOperation = Literal["list", "get", "add", "update", "delete"]
@@ -80,9 +81,9 @@ def create_mcp_server(
             "targets, meal logs, training activities, and long-term memory. "
             "Use the grouped domain tools to read and update stable user "
             "documents, body metrics, food products, daily targets, meal "
-            "logs, training history, and long-term memory. Use "
-            "get_daily_summary when you need one computed view of targets "
-            "versus actual intake and exercise for a given date."
+            "logs, daily wellness metrics, training history, and long-term "
+            "memory. Use get_daily_summary when you need one computed view "
+            "of targets versus actual intake and exercise for a given date."
         ),
         auth=build_auth_provider(resolved_settings),
     )
@@ -310,6 +311,8 @@ def create_mcp_server(
             dict[str, object]: List operations return `items`; get/add/update
                 return `item`; delete returns deletion metadata. Products are
                 reusable food entries that support quicker meal logging later.
+                Returned product rows include an internal `usage_count` for
+                successful product-backed meal item additions.
 
         Raises:
             RuntimeError: If authentication is required but unavailable.
@@ -497,6 +500,92 @@ def create_mcp_server(
         payload = await resolved_store.delete_daily_target(
             subject,
             str(_require_value(target_date, "target_date", operation)),
+        )
+        payload["operation"] = operation
+        return payload
+
+    @mcp.tool
+    async def daily_metrics(
+        operation: DailyMetricOperation,
+        metric_date: str | None = None,
+        metric_type: str | None = None,
+        value: float | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        ctx: Context = CURRENT_CONTEXT,
+    ) -> dict[str, object]:
+        """Manage the caller's date-scoped wellness metric entries.
+
+        Parameters:
+            operation: One of `list`, `get`, `set`, or `delete`.
+            metric_date: Metric ISO date required for `get`, `set`, and
+                `delete`.
+            metric_type: Metric type required for `get`, `set`, and `delete`;
+                optional filter for `list`. Supported values are `weight`,
+                `steps`, and `sleep_hours`.
+            value: Numeric metric value required for `set`.
+            date_from: Optional lower ISO date bound for `list`.
+            date_to: Optional upper ISO date bound for `list`.
+            ctx: Current FastMCP request context injected automatically.
+
+        Returns:
+            dict[str, object]: List operations return `items`; get/set return
+                `item`; delete returns deletion metadata. Daily metrics are
+                stored separately from the computed daily nutrition summary so
+                callers can track simple trends without changing summary math.
+
+        Raises:
+            RuntimeError: If authentication is required but unavailable.
+            ValueError: If the requested operation is missing required fields
+                or a metric type/value fails validation.
+            Exception: Propagated from the configured storage backend.
+        """
+
+        identity = current_identity(ctx)
+        subject = identity.storage_subject()
+
+        if operation == "list":
+            return _items_result(
+                operation,
+                await resolved_store.list_daily_metrics(
+                    subject,
+                    date_from=date_from,
+                    date_to=date_to,
+                    metric_type=metric_type,
+                ),
+            )
+
+        required_metric_date = str(
+            _require_value(metric_date, "metric_date", operation)
+        )
+        required_metric_type = str(
+            _require_value(metric_type, "metric_type", operation)
+        )
+
+        if operation == "get":
+            return _item_result(
+                operation,
+                await resolved_store.get_daily_metric(
+                    subject,
+                    required_metric_date,
+                    required_metric_type,
+                ),
+            )
+        if operation == "set":
+            return _item_result(
+                operation,
+                await resolved_store.set_daily_metric(
+                    subject,
+                    metric_date=required_metric_date,
+                    metric_type=required_metric_type,
+                    value=_require_value(value, "value", operation),
+                ),
+            )
+
+        payload = await resolved_store.delete_daily_metric(
+            subject,
+            required_metric_date,
+            required_metric_type,
         )
         payload["operation"] = operation
         return payload

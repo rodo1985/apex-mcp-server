@@ -42,6 +42,7 @@ This repo uses a small wellness schema with these tables:
 - `user_profiles`
 - `food_products`
 - `daily_targets`
+- `daily_metrics`
 - `daily_meals`
 - `meal_items`
 - `activity_entries`
@@ -52,6 +53,18 @@ connection, because the server bootstraps the additive schema at startup. If
 you prefer to create it manually first, use the checked-in SQL file in
 [`docker/postgres/init/001_schema.sql`](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docker/postgres/init/001_schema.sql)
 in the Supabase SQL editor.
+
+If the remote database role cannot create tables automatically, run the
+`daily_metrics` SQL block from that file manually before deploying this
+feature.
+
+If you are updating an existing Supabase database and want to apply the latest
+food-product usage counter manually before deploy, run:
+
+```sql
+ALTER TABLE food_products
+ADD COLUMN IF NOT EXISTS usage_count INTEGER NOT NULL DEFAULT 0;
+```
 
 ## 3. Get the Supabase connection string
 
@@ -209,6 +222,7 @@ After Claude connects successfully, test these MCP actions:
 - `user_data(operation="get")`
 - `products(operation="add", ...)`
 - `daily_targets(operation="set", ...)`
+- `daily_metrics(operation="set", metric_type="weight", ...)`
 - `meals(operation="add", ...)`
 - `meal_items(operation="add", ...)`
 - `activities(operation="add", ...)`

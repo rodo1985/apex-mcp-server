@@ -23,11 +23,15 @@ CREATE TABLE IF NOT EXISTS food_products (
     carbs_g_per_100g DOUBLE PRECISION NOT NULL,
     protein_g_per_100g DOUBLE PRECISION NOT NULL,
     fat_g_per_100g DOUBLE PRECISION NOT NULL,
+    usage_count INTEGER NOT NULL DEFAULT 0,
     notes_markdown TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (subject, name)
 );
+
+ALTER TABLE food_products
+    ADD COLUMN IF NOT EXISTS usage_count INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_food_products_subject_name
     ON food_products (subject, name);
@@ -49,6 +53,20 @@ CREATE TABLE IF NOT EXISTS daily_targets (
 
 CREATE INDEX IF NOT EXISTS idx_daily_targets_subject_date
     ON daily_targets (subject, target_date);
+
+CREATE TABLE IF NOT EXISTS daily_metrics (
+    id BIGSERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    metric_date DATE NOT NULL,
+    metric_type TEXT NOT NULL,
+    value DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (subject, metric_date, metric_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_metrics_subject_type_date
+    ON daily_metrics (subject, metric_type, metric_date DESC);
 
 CREATE TABLE IF NOT EXISTS daily_meals (
     id BIGSERIAL PRIMARY KEY,
