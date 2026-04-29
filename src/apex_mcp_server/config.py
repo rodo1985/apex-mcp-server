@@ -39,6 +39,12 @@ class Settings:
         workos_authkit_domain: WorkOS AuthKit domain used for OAuth mode.
         database_url: Shared Postgres connection string used in every
             environment, including local Docker, Vercel, and VM deployments.
+        strava_client_id: Optional Strava API client id used only when the
+            external sync tool is called with `service="strava"`.
+        strava_client_secret: Optional Strava API client secret used only for
+            Strava token refresh during activity sync.
+        strava_refresh_token: Optional Strava refresh token used to request a
+            short-lived access token during activity sync.
 
     Returns:
         Settings: Fully normalized server configuration.
@@ -59,6 +65,9 @@ class Settings:
     public_base_url: str | None
     workos_authkit_domain: str | None
     database_url: str | None
+    strava_client_id: str | None = None
+    strava_client_secret: str | None = None
+    strava_refresh_token: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -91,6 +100,13 @@ class Settings:
                 os.environ.get("WORKOS_AUTHKIT_DOMAIN")
             ),
             database_url=_clean_optional_value(os.environ.get("DATABASE_URL")),
+            strava_client_id=_clean_optional_value(os.environ.get("STRAVA_CLIENT_ID")),
+            strava_client_secret=_clean_optional_value(
+                os.environ.get("STRAVA_CLIENT_SECRET")
+            ),
+            strava_refresh_token=_clean_optional_value(
+                os.environ.get("STRAVA_REFRESH_TOKEN")
+            ),
         )
 
         settings.validate()

@@ -136,7 +136,13 @@ Optional:
 ```text
 MCP_SERVER_NAME=APEX FastMCP Profile Pilot
 MCP_SERVER_VERSION=0.1.0
+STRAVA_CLIENT_ID=your-strava-client-id
+STRAVA_CLIENT_SECRET=your-strava-client-secret
+STRAVA_REFRESH_TOKEN=your-strava-refresh-token
 ```
+
+The Strava variables are needed only if the deployed MCP agent should call
+`sync_external_service(service="strava", ...)`.
 
 ## Where to store secrets
 
@@ -149,7 +155,7 @@ For local development, keep secrets local only. Two simple options are:
 1. Copy `.env.example` to `.env.local`
 2. Use `vercel env pull` to copy Vercel env vars into a local env file that stays out of git
 
-Do not commit bearer tokens or database passwords into the repo.
+Do not commit bearer tokens, database passwords, or Strava secrets into the repo.
 
 ## Deployment flow
 
@@ -166,6 +172,14 @@ vercel env add DATABASE_URL production
 vercel env add MCP_AUTH_MODE production
 vercel env add MCP_PUBLIC_BASE_URL production
 vercel env add WORKOS_AUTHKIT_DOMAIN production
+```
+
+If Strava sync should work in production, also set:
+
+```bash
+vercel env add STRAVA_CLIENT_ID production
+vercel env add STRAVA_CLIENT_SECRET production
+vercel env add STRAVA_REFRESH_TOKEN production
 ```
 
 3. Deploy to production:
@@ -196,6 +210,7 @@ https://<your-stable-production-domain>/mcp
 - `meals(operation="add", ...)`
 - `meal_items(operation="add", ...)`
 - `activities(operation="add", ...)`
+- `sync_external_service(service="strava", day="today")`
 - `memory_items(operation="add", ...)`
 - `get_daily_summary`
 - `profile://me`

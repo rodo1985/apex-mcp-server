@@ -164,6 +164,9 @@ Optional:
 ```text
 MCP_SERVER_NAME=APEX FastMCP Profile Pilot
 MCP_SERVER_VERSION=0.1.0
+STRAVA_CLIENT_ID=your-strava-client-id
+STRAVA_CLIENT_SECRET=your-strava-client-secret
+STRAVA_REFRESH_TOKEN=your-strava-refresh-token
 ```
 
 Important notes:
@@ -171,6 +174,7 @@ Important notes:
 - `MCP_PUBLIC_BASE_URL` is the base URL only
 - do not append `/mcp` to `MCP_PUBLIC_BASE_URL`
 - `DATABASE_URL` should not go in the repo; keep it only in Vercel
+- Strava variables are needed only for `sync_external_service(service="strava", ...)`
 
 ## 6. Make the Claude-facing endpoint public
 
@@ -226,6 +230,7 @@ After Claude connects successfully, test these MCP actions:
 - `meals(operation="add", ...)`
 - `meal_items(operation="add", ...)`
 - `activities(operation="add", ...)`
+- `sync_external_service(service="strava", day="today")`
 - `memory_items(operation="add", ...)`
 - `get_daily_summary`
 - `profile://me`

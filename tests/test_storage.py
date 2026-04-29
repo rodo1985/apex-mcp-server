@@ -832,6 +832,94 @@ async def test_postgres_store_activities_support_json_and_external_uniqueness(
 
 
 @pytest.mark.asyncio
+async def test_postgres_store_upserts_external_activities_idempotently(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure external sync upserts by subject, source, and upstream id.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("external-upsert")
+    other_subject = make_subject("external-upsert-other")
+    activity_payload = {
+        "activity_date": "2026-04-29",
+        "title": "Synced run",
+        "external_source": "strava",
+        "external_activity_id": "activity-1",
+        "athlete_id": "athlete-1",
+        "sport_type": "Run",
+        "distance_meters": 10000.0,
+        "moving_time_seconds": 2700,
+        "elapsed_time_seconds": 2800,
+        "total_elevation_gain_meters": 120.0,
+        "average_speed_mps": 3.7,
+        "max_speed_mps": 5.2,
+        "average_heartrate": 145.0,
+        "max_heartrate": 178.0,
+        "average_watts": None,
+        "weighted_average_watts": None,
+        "calories": 600.0,
+        "kilojoules": None,
+        "suffer_score": 80.0,
+        "trainer": False,
+        "commute": False,
+        "manual": False,
+        "is_private": False,
+        "zones": {"z2": 30},
+        "laps": [{"name": "Lap 1"}],
+        "streams": None,
+        "raw_payload": {"id": 1, "name": "Synced run"},
+        "notes_markdown": "Imported from Strava.",
+    }
+
+    first_result = await postgres_store.upsert_external_activity(
+        subject,
+        activity_payload,
+    )
+    updated_payload = {
+        **activity_payload,
+        "title": "Synced run updated",
+        "calories": 625.0,
+        "raw_payload": {"id": 1, "name": "Synced run updated"},
+    }
+    second_result = await postgres_store.upsert_external_activity(
+        subject,
+        updated_payload,
+    )
+    other_subject_result = await postgres_store.upsert_external_activity(
+        other_subject,
+        activity_payload,
+    )
+    listed = await postgres_store.list_activities(
+        subject,
+        date_from="2026-04-29",
+        date_to="2026-04-29",
+        external_source="strava",
+    )
+
+    first_item = first_result["item"]
+    second_item = second_result["item"]
+    other_subject_item = other_subject_result["item"]
+
+    assert first_result["action"] == "inserted"
+    assert second_result["action"] == "updated"
+    assert other_subject_result["action"] == "inserted"
+    assert isinstance(first_item, dict)
+    assert isinstance(second_item, dict)
+    assert isinstance(other_subject_item, dict)
+    assert first_item["id"] == second_item["id"]
+    assert other_subject_item["id"] != first_item["id"]
+    assert len(listed) == 1
+    assert listed[0]["title"] == "Synced run updated"
+    assert listed[0]["calories"] == 625.0
+
+
+@pytest.mark.asyncio
 async def test_postgres_store_memory_items_support_crud_and_scoping(
     postgres_store: PostgresUserStore,
 ) -> None:

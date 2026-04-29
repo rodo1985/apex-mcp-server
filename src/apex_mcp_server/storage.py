@@ -7,6 +7,7 @@ import json
 from abc import ABC, abstractmethod
 from datetime import date, datetime
 from math import isfinite
+from typing import Any
 
 import asyncpg
 
@@ -627,6 +628,27 @@ class UserStore(ABC):
         notes_markdown: str = "",
     ) -> dict[str, object] | None:
         """Replace one activity entry owned by a subject."""
+
+    @abstractmethod
+    async def upsert_external_activity(
+        self,
+        subject: str,
+        activity: dict[str, object],
+    ) -> dict[str, object]:
+        """Insert or update one externally sourced activity row.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            activity: Activity payload with `external_source` and
+                `external_activity_id` populated by an external sync service.
+
+        Returns:
+            dict[str, object]: Upsert result with `action` and `item` keys.
+
+        Raises:
+            ValueError: If required external identifiers are missing.
+            Exception: Propagated from the concrete storage backend.
+        """
 
     @abstractmethod
     async def delete_activity(
@@ -2310,6 +2332,55 @@ class PostgresUserStore(UserStore):
         )
         return self._row_to_dict(row)
 
+    async def upsert_external_activity(
+        self,
+        subject: str,
+        activity: dict[str, object],
+    ) -> dict[str, object]:
+        """Insert or update one externally sourced activity row.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            activity: Activity payload with `external_source` and
+                `external_activity_id` populated by a sync service.
+
+        Returns:
+            dict[str, object]: Upsert result with `action` set to `inserted`
+                or `updated`, plus the saved activity row under `item`.
+
+        Raises:
+            ValueError: If required activity fields are missing.
+            Exception: Propagated from asyncpg when the lookup or write fails.
+        """
+
+        activity_kwargs = _external_activity_kwargs(activity)
+        existing = await self._fetchrow(
+            """
+            SELECT id
+            FROM activity_entries
+            WHERE subject = $1
+              AND external_source = $2
+              AND external_activity_id = $3
+            """,
+            subject,
+            activity_kwargs["external_source"],
+            activity_kwargs["external_activity_id"],
+        )
+
+        if existing is None:
+            item = await self.add_activity(subject, **activity_kwargs)
+            return {"action": "inserted", "item": item}
+
+        item = await self.update_activity(
+            subject,
+            activity_id=int(existing["id"]),
+            **activity_kwargs,
+        )
+        return {
+            "action": "updated",
+            "item": item,
+        }
+
     async def delete_activity(
         self,
         subject: str,
@@ -3073,6 +3144,163 @@ def _parse_iso_date(value: str) -> date:
     """
 
     return date.fromisoformat(value)
+
+
+def _external_activity_kwargs(activity: dict[str, object]) -> dict[str, Any]:
+    """Normalize an external-sync activity payload for storage methods.
+
+    Parameters:
+        activity: Raw activity payload prepared by an external service mapper.
+
+    Returns:
+        dict[str, Any]: Keyword arguments accepted by `add_activity` and
+            `update_activity`.
+
+    Raises:
+        ValueError: If required activity fields are missing.
+    """
+
+    return {
+        "activity_date": _required_activity_text(activity, "activity_date"),
+        "title": _required_activity_text(activity, "title"),
+        "external_source": _required_activity_text(activity, "external_source"),
+        "external_activity_id": _required_activity_text(
+            activity,
+            "external_activity_id",
+        ),
+        "athlete_id": _optional_activity_text(activity, "athlete_id"),
+        "sport_type": _optional_activity_text(activity, "sport_type"),
+        "distance_meters": _optional_activity_float(activity, "distance_meters"),
+        "moving_time_seconds": _optional_activity_int(
+            activity,
+            "moving_time_seconds",
+        ),
+        "elapsed_time_seconds": _optional_activity_int(
+            activity,
+            "elapsed_time_seconds",
+        ),
+        "total_elevation_gain_meters": _optional_activity_float(
+            activity,
+            "total_elevation_gain_meters",
+        ),
+        "average_speed_mps": _optional_activity_float(activity, "average_speed_mps"),
+        "max_speed_mps": _optional_activity_float(activity, "max_speed_mps"),
+        "average_heartrate": _optional_activity_float(activity, "average_heartrate"),
+        "max_heartrate": _optional_activity_float(activity, "max_heartrate"),
+        "average_watts": _optional_activity_float(activity, "average_watts"),
+        "weighted_average_watts": _optional_activity_float(
+            activity,
+            "weighted_average_watts",
+        ),
+        "calories": _optional_activity_float(activity, "calories"),
+        "kilojoules": _optional_activity_float(activity, "kilojoules"),
+        "suffer_score": _optional_activity_float(activity, "suffer_score"),
+        "trainer": bool(activity.get("trainer", False)),
+        "commute": bool(activity.get("commute", False)),
+        "manual": bool(activity.get("manual", False)),
+        "is_private": bool(activity.get("is_private", False)),
+        "zones": (
+            activity.get("zones") if isinstance(activity.get("zones"), dict) else None
+        ),
+        "laps": (
+            activity.get("laps") if isinstance(activity.get("laps"), list) else None
+        ),
+        "streams": (
+            activity.get("streams")
+            if isinstance(activity.get("streams"), dict)
+            else None
+        ),
+        "raw_payload": (
+            activity.get("raw_payload")
+            if isinstance(activity.get("raw_payload"), dict)
+            else None
+        ),
+        "notes_markdown": str(activity.get("notes_markdown") or ""),
+    }
+
+
+def _required_activity_text(activity: dict[str, object], key: str) -> str:
+    """Read a required non-empty string from an activity payload.
+
+    Parameters:
+        activity: Activity payload to read.
+        key: Required key name.
+
+    Returns:
+        str: Trimmed text value.
+
+    Raises:
+        ValueError: If the key is missing or empty.
+    """
+
+    value = activity.get(key)
+    if value is None:
+        raise ValueError(f"{key} is required for external activity upsert.")
+    cleaned = str(value).strip()
+    if not cleaned:
+        raise ValueError(f"{key} is required for external activity upsert.")
+    return cleaned
+
+
+def _optional_activity_text(activity: dict[str, object], key: str) -> str | None:
+    """Read an optional string from an activity payload.
+
+    Parameters:
+        activity: Activity payload to read.
+        key: Optional key name.
+
+    Returns:
+        str | None: Trimmed text value or `None`.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    value = activity.get(key)
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _optional_activity_float(activity: dict[str, object], key: str) -> float | None:
+    """Read an optional float from an activity payload.
+
+    Parameters:
+        activity: Activity payload to read.
+        key: Optional key name.
+
+    Returns:
+        float | None: Float value or `None`.
+
+    Raises:
+        ValueError: If a present value cannot be converted to `float`.
+    """
+
+    value = activity.get(key)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _optional_activity_int(activity: dict[str, object], key: str) -> int | None:
+    """Read an optional integer from an activity payload.
+
+    Parameters:
+        activity: Activity payload to read.
+        key: Optional key name.
+
+    Returns:
+        int | None: Integer value or `None`.
+
+    Raises:
+        ValueError: If a present value cannot be converted to `int`.
+    """
+
+    value = activity.get(key)
+    if value is None:
+        return None
+    return int(value)
 
 
 def _normalize_daily_metric_type(metric_type: str) -> str:

@@ -169,6 +169,56 @@ def test_oauth_settings_succeed_with_required_values(monkeypatch) -> None:
     assert settings.database_url == "postgresql://demo:demo@localhost:5432/demo"
 
 
+def test_settings_load_optional_strava_credentials(monkeypatch) -> None:
+    """Ensure Strava credentials are optional but loaded when configured.
+
+    Parameters:
+        monkeypatch: Pytest fixture for temporary environment overrides.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If Strava env vars are not parsed as expected.
+    """
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
+    monkeypatch.setenv("STRAVA_CLIENT_ID", " client-id ")
+    monkeypatch.setenv("STRAVA_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "refresh-token")
+
+    settings = Settings.from_env()
+
+    assert settings.strava_client_id == "client-id"
+    assert settings.strava_client_secret == "client-secret"
+    assert settings.strava_refresh_token == "refresh-token"
+
+
+def test_settings_do_not_require_strava_credentials(monkeypatch) -> None:
+    """Ensure the server can start without Strava sync credentials.
+
+    Parameters:
+        monkeypatch: Pytest fixture for temporary environment overrides.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If missing Strava env vars fail server settings.
+    """
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
+    monkeypatch.delenv("STRAVA_CLIENT_ID", raising=False)
+    monkeypatch.delenv("STRAVA_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("STRAVA_REFRESH_TOKEN", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.strava_client_id is None
+    assert settings.strava_client_secret is None
+    assert settings.strava_refresh_token is None
+
+
 def test_build_user_store_returns_postgres_store() -> None:
     """Ensure store creation now always targets Postgres.
 

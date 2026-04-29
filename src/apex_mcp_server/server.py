@@ -10,6 +10,7 @@ from fastmcp.prompts import Message, PromptResult
 
 from apex_mcp_server.auth import build_auth_provider
 from apex_mcp_server.config import Settings
+from apex_mcp_server.external_services import sync_external_service as run_sync
 from apex_mcp_server.identity import resolve_identity
 from apex_mcp_server.models import DailySummaryRecord, UserData, UserIdentity
 from apex_mcp_server.storage import UserStore, build_user_store
@@ -82,8 +83,10 @@ def create_mcp_server(
             "Use the grouped domain tools to read and update stable user "
             "documents, body metrics, food products, daily targets, meal "
             "logs, daily wellness metrics, training history, and long-term "
-            "memory. Use get_daily_summary when you need one computed view "
-            "of targets versus actual intake and exercise for a given date."
+            "memory. Use sync_external_service to import activity data from "
+            "supported external services such as Strava. Use get_daily_summary "
+            "when you need one computed view of targets versus actual intake "
+            "and exercise for a given date."
         ),
         auth=build_auth_provider(resolved_settings),
     )
@@ -950,6 +953,39 @@ def create_mcp_server(
         )
         payload["operation"] = operation
         return payload
+
+    @mcp.tool
+    async def sync_external_service(
+        service: str,
+        day: str,
+        ctx: Context = CURRENT_CONTEXT,
+    ) -> dict[str, object]:
+        """Sync activity data from a supported external service.
+
+        Parameters:
+            service: External service name. Only `strava` is supported in v1.
+            day: Day to sync: `today`, `yesterday`, or ISO `YYYY-MM-DD`.
+            ctx: Current FastMCP request context injected automatically.
+
+        Returns:
+            dict[str, object]: Sync summary with fetched, inserted, updated,
+                and skipped counts, stored activity ids, and safe warnings.
+
+        Raises:
+            RuntimeError: If authentication is required but unavailable.
+            ValueError: If the service or day input is unsupported.
+            SettingsError: If Strava credentials are missing.
+            Exception: Propagated from Strava HTTP calls or storage writes.
+        """
+
+        identity = current_identity(ctx)
+        return await run_sync(
+            settings=resolved_settings,
+            store=resolved_store,
+            subject=identity.storage_subject(),
+            service=service,
+            day=day,
+        )
 
     @mcp.tool
     async def memory_items(

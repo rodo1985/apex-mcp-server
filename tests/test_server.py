@@ -1226,6 +1226,98 @@ class InMemoryUserStore(UserStore):
         )
         return self._copy(row)
 
+    async def upsert_external_activity(
+        self,
+        subject: str,
+        activity: dict[str, object],
+    ) -> dict[str, object]:
+        """Insert or update one synced external activity row."""
+
+        external_source = str(activity["external_source"])
+        external_activity_id = str(activity["external_activity_id"])
+        bucket = self._subject_bucket(self.activities, subject)
+        existing_id = next(
+            (
+                activity_id
+                for activity_id, row in bucket.items()
+                if row["external_source"] == external_source
+                and row["external_activity_id"] == external_activity_id
+            ),
+            None,
+        )
+
+        if existing_id is None:
+            item = await self.add_activity(
+                subject,
+                activity_date=str(activity["activity_date"]),
+                title=str(activity["title"]),
+                external_source=external_source,
+                external_activity_id=external_activity_id,
+                athlete_id=activity.get("athlete_id"),  # type: ignore[arg-type]
+                sport_type=activity.get("sport_type"),  # type: ignore[arg-type]
+                distance_meters=activity.get("distance_meters"),  # type: ignore[arg-type]
+                moving_time_seconds=activity.get("moving_time_seconds"),  # type: ignore[arg-type]
+                elapsed_time_seconds=activity.get("elapsed_time_seconds"),  # type: ignore[arg-type]
+                total_elevation_gain_meters=activity.get(
+                    "total_elevation_gain_meters"
+                ),  # type: ignore[arg-type]
+                average_speed_mps=activity.get("average_speed_mps"),  # type: ignore[arg-type]
+                max_speed_mps=activity.get("max_speed_mps"),  # type: ignore[arg-type]
+                average_heartrate=activity.get("average_heartrate"),  # type: ignore[arg-type]
+                max_heartrate=activity.get("max_heartrate"),  # type: ignore[arg-type]
+                average_watts=activity.get("average_watts"),  # type: ignore[arg-type]
+                weighted_average_watts=activity.get("weighted_average_watts"),  # type: ignore[arg-type]
+                calories=activity.get("calories"),  # type: ignore[arg-type]
+                kilojoules=activity.get("kilojoules"),  # type: ignore[arg-type]
+                suffer_score=activity.get("suffer_score"),  # type: ignore[arg-type]
+                trainer=bool(activity.get("trainer", False)),
+                commute=bool(activity.get("commute", False)),
+                manual=bool(activity.get("manual", False)),
+                is_private=bool(activity.get("is_private", False)),
+                zones=activity.get("zones"),  # type: ignore[arg-type]
+                laps=activity.get("laps"),  # type: ignore[arg-type]
+                streams=activity.get("streams"),  # type: ignore[arg-type]
+                raw_payload=activity.get("raw_payload"),  # type: ignore[arg-type]
+                notes_markdown=str(activity.get("notes_markdown") or ""),
+            )
+            return {"action": "inserted", "item": item}
+
+        item = await self.update_activity(
+            subject,
+            activity_id=existing_id,
+            activity_date=str(activity["activity_date"]),
+            title=str(activity["title"]),
+            external_source=external_source,
+            external_activity_id=external_activity_id,
+            athlete_id=activity.get("athlete_id"),  # type: ignore[arg-type]
+            sport_type=activity.get("sport_type"),  # type: ignore[arg-type]
+            distance_meters=activity.get("distance_meters"),  # type: ignore[arg-type]
+            moving_time_seconds=activity.get("moving_time_seconds"),  # type: ignore[arg-type]
+            elapsed_time_seconds=activity.get("elapsed_time_seconds"),  # type: ignore[arg-type]
+            total_elevation_gain_meters=activity.get(
+                "total_elevation_gain_meters"
+            ),  # type: ignore[arg-type]
+            average_speed_mps=activity.get("average_speed_mps"),  # type: ignore[arg-type]
+            max_speed_mps=activity.get("max_speed_mps"),  # type: ignore[arg-type]
+            average_heartrate=activity.get("average_heartrate"),  # type: ignore[arg-type]
+            max_heartrate=activity.get("max_heartrate"),  # type: ignore[arg-type]
+            average_watts=activity.get("average_watts"),  # type: ignore[arg-type]
+            weighted_average_watts=activity.get("weighted_average_watts"),  # type: ignore[arg-type]
+            calories=activity.get("calories"),  # type: ignore[arg-type]
+            kilojoules=activity.get("kilojoules"),  # type: ignore[arg-type]
+            suffer_score=activity.get("suffer_score"),  # type: ignore[arg-type]
+            trainer=bool(activity.get("trainer", False)),
+            commute=bool(activity.get("commute", False)),
+            manual=bool(activity.get("manual", False)),
+            is_private=bool(activity.get("is_private", False)),
+            zones=activity.get("zones"),  # type: ignore[arg-type]
+            laps=activity.get("laps"),  # type: ignore[arg-type]
+            streams=activity.get("streams"),  # type: ignore[arg-type]
+            raw_payload=activity.get("raw_payload"),  # type: ignore[arg-type]
+            notes_markdown=str(activity.get("notes_markdown") or ""),
+        )
+        return {"action": "updated", "item": item}
+
     async def delete_activity(
         self,
         subject: str,
@@ -2011,6 +2103,7 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         "meals",
         "meal_items",
         "activities",
+        "sync_external_service",
         "memory_items",
         "get_daily_summary",
         "whoami",
@@ -2129,6 +2222,83 @@ async def test_server_tools_cover_singletons_collections_and_summary(
         "operation": "delete",
         "deleted": True,
         "product_id": product_data["id"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_external_service_tool_returns_summary(
+    monkeypatch,
+    no_auth_settings: Settings,
+) -> None:
+    """Ensure the external sync MCP tool delegates and returns its summary.
+
+    Parameters:
+        monkeypatch: Pytest fixture for replacing the network sync helper.
+        no_auth_settings: Local test settings.
+
+    Returns:
+        None.
+    """
+
+    async def fake_run_sync(
+        settings: Settings,
+        store: UserStore,
+        subject: str,
+        service: str,
+        day: str,
+    ) -> dict[str, object]:
+        """Return a stable sync summary without calling external services.
+
+        Parameters:
+            settings: Runtime settings passed by the MCP tool.
+            store: Store passed by the MCP tool.
+            subject: Resolved storage subject for the caller.
+            service: Requested external service.
+            day: Requested day.
+
+        Returns:
+            dict[str, object]: Fake sync summary.
+        """
+
+        assert settings is no_auth_settings
+        assert isinstance(store, InMemoryUserStore)
+        assert subject == "anonymous"
+        assert service == "strava"
+        assert day == "today"
+        return {
+            "service": "strava",
+            "requested_day": "today",
+            "resolved_date": "2026-04-29",
+            "fetched_count": 1,
+            "inserted_count": 1,
+            "updated_count": 0,
+            "skipped_count": 0,
+            "activity_ids": [1],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("apex_mcp_server.server.run_sync", fake_run_sync)
+    server = create_mcp_server(
+        settings=no_auth_settings,
+        store=InMemoryUserStore(),
+    )
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "sync_external_service",
+            {"service": "strava", "day": "today"},
+        )
+
+    assert as_mapping(result.data) == {
+        "service": "strava",
+        "requested_day": "today",
+        "resolved_date": "2026-04-29",
+        "fetched_count": 1,
+        "inserted_count": 1,
+        "updated_count": 0,
+        "skipped_count": 0,
+        "activity_ids": [1],
+        "warnings": [],
     }
 
 

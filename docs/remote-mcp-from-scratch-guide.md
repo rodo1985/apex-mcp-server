@@ -250,6 +250,8 @@ Important:
 - `MCP_PUBLIC_BASE_URL` is the base URL only
 - do not include `/mcp` in `MCP_PUBLIC_BASE_URL`
 - `WORKOS_AUTHKIT_DOMAIN` is your AuthKit domain, not your app URL
+- add `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, and
+  `STRAVA_REFRESH_TOKEN` only if this deployment should sync Strava activities
 
 ## 10. Vercel protection setting
 
@@ -287,6 +289,7 @@ After connection, test:
 - `meals(operation="add", ...)`
 - `meal_items(operation="add", ...)`
 - `activities(operation="add", ...)`
+- `sync_external_service(service="strava", day="today")`
 - `memory_items(operation="add", ...)`
 - `get_daily_summary`
 

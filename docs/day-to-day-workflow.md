@@ -123,6 +123,7 @@ For normal code-only releases, you should not need to change:
 - `MCP_AUTH_MODE`
 - `MCP_PUBLIC_BASE_URL`
 - `WORKOS_AUTHKIT_DOMAIN`
+- `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, and `STRAVA_REFRESH_TOKEN`
 - Supabase table structure, unless you are making a schema change
 
 That means most updates are just:
@@ -143,6 +144,7 @@ Touch infrastructure only when one of these changes:
 - the database password
 - the Vercel production domain
 - the WorkOS AuthKit project/domain
+- the Strava app credentials or refresh token
 - the Claude-facing OAuth behavior
 
 Examples:
@@ -152,6 +154,8 @@ Examples:
   resource indicator.
 - If the schema changes, apply the new SQL to Supabase and keep local Docker
   schema init in sync.
+- If Strava rotates the refresh token, update `STRAVA_REFRESH_TOKEN` in Vercel
+  before relying on the deployed sync tool again.
 
 ## 7. Recommended validation after deploy
 

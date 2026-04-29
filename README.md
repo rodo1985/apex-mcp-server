@@ -1,6 +1,6 @@
 # apex-mcp-server
 
-This repo is a small FastMCP baseline for a private wellness-profile server. It exposes a focused MCP surface for profile documents, simple body metrics, food catalog data, daily nutrition logs, daily wellness metrics, activity logs, long-term memory, one resource, one prompt, and one auth-debugging tool.
+This repo is a small FastMCP baseline for a private wellness-profile server. It exposes a focused MCP surface for profile documents, simple body metrics, food catalog data, daily nutrition logs, daily wellness metrics, activity logs, Strava activity sync, long-term memory, one resource, one prompt, and one auth-debugging tool.
 
 The goal is to keep the proof of concept easy to understand and easy to reuse for future MCP servers. The server runs against one Postgres database in every environment, with Docker Compose for local development and a generic `DATABASE_URL` for Vercel, VMs, or other remote deployments.
 
@@ -12,6 +12,7 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
   - `user_data` for numeric body metrics
   - `products`, `daily_targets`, `daily_metrics`, `meals`, `meal_items`,
     `activities`, and `memory_items` for collection CRUD operations
+  - `sync_external_service` for importing external activity data, starting with Strava
 - Supports `get_daily_summary` to compute one day's target-vs-actual rollup on read.
 - Returns an internal `usage_count` on food products so agents can see how often
   a catalog item has been used in successful meal-item additions.
@@ -25,6 +26,8 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
   - daily meals and meal items
   - activity entries
   - memory items
+- Supports Strava activity sync with env-based credentials and idempotent writes
+  by Strava activity id.
 - Supports three auth modes:
   - `none` for quick local experiments
   - `bearer` for protected local or direct-client use
@@ -184,11 +187,17 @@ MCP_PUBLIC_BASE_URL=https://your-public-domain
 WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
 MCP_SERVER_NAME=APEX FastMCP Profile Pilot
 MCP_SERVER_VERSION=0.1.0
+STRAVA_CLIENT_ID=your-strava-client-id
+STRAVA_CLIENT_SECRET=your-strava-client-secret
+STRAVA_REFRESH_TOKEN=your-strava-refresh-token
 ```
+
+The Strava variables are optional at server startup. They are required only
+when an agent calls `sync_external_service(service="strava", ...)`.
 
 ### Vercel production setup
 
-For a Claude-facing OAuth deployment, set at least:
+For a Claude-facing OAuth deployment, set these base variables:
 
 ```text
 DATABASE_URL=postgresql://user:password@host:5432/database
@@ -197,8 +206,17 @@ MCP_PUBLIC_BASE_URL=https://your-public-domain
 WORKOS_AUTHKIT_DOMAIN=https://your-project.authkit.app
 ```
 
+Add these optional Strava variables when the deployed agent should sync Strava:
+
+```text
+STRAVA_CLIENT_ID=your-strava-client-id
+STRAVA_CLIENT_SECRET=your-strava-client-secret
+STRAVA_REFRESH_TOKEN=your-strava-refresh-token
+```
+
 For the full manual Vercel deployment and remote testing guide, see [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
 For the focused Vercel + Supabase setup checklist used by this repo, see [docs/vercel-supabase-setup.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-supabase-setup.md).
+For the external service activity sync workflow, see [docs/external-service-sync.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/external-service-sync.md).
 For the daily wellness metric tool and schema details, see [docs/daily-metrics.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/daily-metrics.md).
 For the reusable end-to-end guide you can apply to future MCP servers, including manual Vercel upload, WorkOS setup, and Claude connector setup, see [docs/remote-mcp-from-scratch-guide.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/remote-mcp-from-scratch-guide.md).
 For the recommended normal development and release path after the one-time setup is done, see [docs/day-to-day-workflow.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/day-to-day-workflow.md).
@@ -217,6 +235,30 @@ Supported operations:
 - `daily_metrics(operation="delete", metric_date="2026-04-14", metric_type="weight")`
 
 Supported metric types are `weight`, `steps`, and `sleep_hours`. Re-logging the same caller, date, and metric type updates the existing row. These metrics are stored for trend tracking and are not folded into `get_daily_summary`.
+
+## External Service Sync
+
+Use `sync_external_service` when an agent should import activities from an
+external provider into the existing activity log.
+
+Supported v1 calls:
+
+```text
+sync_external_service(service="strava", day="today")
+sync_external_service(service="strava", day="yesterday")
+sync_external_service(service="strava", day="2026-04-29")
+```
+
+The tool interprets `today` and `yesterday` as Europe/Madrid wellness days,
+fetches Strava activities for that day, and upserts them into
+`activity_entries` by Strava activity id. Re-running the same day updates the
+existing synced rows instead of creating duplicates.
+
+For Strava, create an app in Strava, authorize it with `activity:read`, and use
+`activity:read_all` if private "Only Me" activities should sync. This v1 keeps
+the Strava refresh token in env vars only. If Strava rotates the refresh token,
+the tool returns a warning and you should update `STRAVA_REFRESH_TOKEN` in your
+local or Vercel environment.
 
 ## Recommended Workflow
 
@@ -302,6 +344,7 @@ Authorization: Bearer AAA
 │   ├── claude-oauth-plan.md
 │   ├── daily-metrics.md
 │   ├── day-to-day-workflow.md
+│   ├── external-service-sync.md
 │   ├── remote-mcp-from-scratch-guide.md
 │   ├── vercel-deploy.md
 │   └── vercel-supabase-setup.md
@@ -310,6 +353,7 @@ Authorization: Bearer AAA
 │       ├── asgi.py
 │       ├── auth.py
 │       ├── config.py
+│       ├── external_services.py
 │       ├── identity.py
 │       ├── models.py
 │       ├── server.py
@@ -317,6 +361,7 @@ Authorization: Bearer AAA
 ├── tests/
 │   ├── test_auth.py
 │   ├── test_config.py
+│   ├── test_external_services.py
 │   ├── test_identity.py
 │   ├── test_server.py
 │   └── test_storage.py
