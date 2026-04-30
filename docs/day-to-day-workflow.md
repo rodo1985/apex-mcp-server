@@ -154,8 +154,9 @@ Examples:
   resource indicator.
 - If the schema changes, apply the new SQL to Supabase and keep local Docker
   schema init in sync.
-- If Strava rotates the refresh token, update `STRAVA_REFRESH_TOKEN` in Vercel
-  before relying on the deployed sync tool again.
+- If you manually regenerate Strava OAuth tokens, update `STRAVA_REFRESH_TOKEN`
+  in Vercel and redeploy. Normal Strava token rotation is saved in Postgres by
+  the sync tool after the first successful sync.
 
 ## 7. Recommended validation after deploy
 

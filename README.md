@@ -26,8 +26,8 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
   - daily meals and meal items
   - activity entries
   - memory items
-- Supports Strava activity sync with env-based credentials and idempotent writes
-  by Strava activity id.
+- Supports Strava activity sync with env-seeded credentials, persisted token
+  rotation, and idempotent writes by Strava activity id.
 - Supports three auth modes:
   - `none` for quick local experiments
   - `bearer` for protected local or direct-client use
@@ -255,10 +255,10 @@ fetches Strava activities for that day, and upserts them into
 existing synced rows instead of creating duplicates.
 
 For Strava, create an app in Strava, authorize it with `activity:read`, and use
-`activity:read_all` if private "Only Me" activities should sync. This v1 keeps
-the Strava refresh token in env vars only. If Strava rotates the refresh token,
-the tool returns a warning and you should update `STRAVA_REFRESH_TOKEN` in your
-local or Vercel environment.
+`activity:read_all` if private "Only Me" activities should sync. The env
+`STRAVA_REFRESH_TOKEN` is the initial seed. After a successful sync, the latest
+rotated refresh token is saved in Postgres per MCP subject so normal token
+rotation does not require editing Vercel env vars.
 
 ## Recommended Workflow
 

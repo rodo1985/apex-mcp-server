@@ -41,6 +41,7 @@ class _FakeConnection:
         assert "CREATE TABLE IF NOT EXISTS food_products" in query
         assert "usage_count INTEGER NOT NULL DEFAULT 0" in query
         assert "CREATE TABLE IF NOT EXISTS daily_metrics" in query
+        assert "CREATE TABLE IF NOT EXISTS external_service_tokens" in query
         assert "CREATE TABLE IF NOT EXISTS memory_items" in query
         return "EXECUTE"
 
@@ -917,6 +918,51 @@ async def test_postgres_store_upserts_external_activities_idempotently(
     assert len(listed) == 1
     assert listed[0]["title"] == "Synced run updated"
     assert listed[0]["calories"] == 625.0
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_external_service_tokens_are_upserted(
+    postgres_store: PostgresUserStore,
+) -> None:
+    """Ensure external service tokens persist rotated refresh tokens.
+
+    Parameters:
+        postgres_store: Connected Postgres user store.
+
+    Returns:
+        None.
+    """
+
+    subject = make_subject("external-token")
+
+    first_token = await postgres_store.save_external_service_token(
+        subject=subject,
+        service="strava",
+        access_token="access-1",
+        refresh_token="refresh-1",
+        expires_at=1_776_000_000,
+        raw_payload={"expires_in": 21600},
+    )
+    second_token = await postgres_store.save_external_service_token(
+        subject=subject,
+        service="strava",
+        access_token="access-2",
+        refresh_token="refresh-2",
+        expires_at=1_776_003_600,
+        raw_payload={"expires_in": 18000},
+    )
+    loaded_token = await postgres_store.get_external_service_token(
+        subject,
+        "strava",
+    )
+
+    assert first_token["refresh_token"] == "refresh-1"
+    assert second_token["refresh_token"] == "refresh-2"
+    assert second_token["expires_at"] == 1_776_003_600
+    assert loaded_token is not None
+    assert loaded_token["access_token"] == "access-2"
+    assert loaded_token["refresh_token"] == "refresh-2"
+    assert loaded_token["raw_payload"] == {"expires_in": 18000}
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from math import isfinite
 from typing import Any
 
@@ -159,6 +159,18 @@ CREATE INDEX IF NOT EXISTS idx_activity_entries_subject_date
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_activity_entries_external
     ON activity_entries (subject, external_source, external_activity_id)
     WHERE external_source IS NOT NULL AND external_activity_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS external_service_tokens (
+    subject TEXT NOT NULL,
+    service TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT NOT NULL,
+    expires_at TIMESTAMPTZ,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (subject, service)
+);
 
 CREATE TABLE IF NOT EXISTS memory_items (
     id BIGSERIAL PRIMARY KEY,
@@ -647,6 +659,54 @@ class UserStore(ABC):
 
         Raises:
             ValueError: If required external identifiers are missing.
+            Exception: Propagated from the concrete storage backend.
+        """
+
+    @abstractmethod
+    async def get_external_service_token(
+        self,
+        subject: str,
+        service: str,
+    ) -> dict[str, object] | None:
+        """Read the latest OAuth token bundle for one external service.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            service: External service name such as `strava`.
+
+        Returns:
+            dict[str, object] | None: Stored token row, or `None` when no token
+                has been saved for this subject and service.
+
+        Raises:
+            Exception: Propagated from the concrete storage backend.
+        """
+
+    @abstractmethod
+    async def save_external_service_token(
+        self,
+        subject: str,
+        service: str,
+        access_token: str | None,
+        refresh_token: str,
+        expires_at: int | None,
+        raw_payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist the latest OAuth token bundle for one external service.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            service: External service name such as `strava`.
+            access_token: Short-lived access token returned by the provider.
+            refresh_token: Latest refresh token returned by the provider.
+            expires_at: Optional Unix timestamp when the access token expires.
+            raw_payload: Safe-to-store raw token response for diagnostics.
+
+        Returns:
+            dict[str, object]: Saved token row metadata.
+
+        Raises:
+            ValueError: If the refresh token is empty.
             Exception: Propagated from the concrete storage backend.
         """
 
@@ -2380,6 +2440,105 @@ class PostgresUserStore(UserStore):
             "action": "updated",
             "item": item,
         }
+
+    async def get_external_service_token(
+        self,
+        subject: str,
+        service: str,
+    ) -> dict[str, object] | None:
+        """Read the latest OAuth token bundle for one external service.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            service: External service name such as `strava`.
+
+        Returns:
+            dict[str, object] | None: Stored token row, or `None` when missing.
+
+        Raises:
+            Exception: Propagated from asyncpg when the query fails.
+        """
+
+        row = await self._fetchrow(
+            """
+            SELECT subject, service, access_token, refresh_token, expires_at,
+                   raw_payload, created_at, updated_at
+            FROM external_service_tokens
+            WHERE subject = $1 AND service = $2
+            """,
+            subject,
+            service,
+        )
+        payload = self._row_to_dict(row)
+        if row is not None and payload is not None and row["expires_at"] is not None:
+            payload["expires_at"] = int(row["expires_at"].timestamp())
+        return payload
+
+    async def save_external_service_token(
+        self,
+        subject: str,
+        service: str,
+        access_token: str | None,
+        refresh_token: str,
+        expires_at: int | None,
+        raw_payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist the latest OAuth token bundle for one external service.
+
+        Parameters:
+            subject: Stable row owner for the current caller.
+            service: External service name such as `strava`.
+            access_token: Short-lived access token returned by the provider.
+            refresh_token: Latest refresh token returned by the provider.
+            expires_at: Optional Unix timestamp when the access token expires.
+            raw_payload: Raw token response stored for diagnostics.
+
+        Returns:
+            dict[str, object]: Saved token row metadata.
+
+        Raises:
+            ValueError: If `refresh_token` is empty.
+            Exception: Propagated from asyncpg when the upsert fails.
+        """
+
+        if not refresh_token.strip():
+            raise ValueError("refresh_token is required for external service token.")
+
+        expires_at_datetime = (
+            datetime.fromtimestamp(expires_at, tz=UTC)
+            if expires_at is not None
+            else None
+        )
+        row = await self._fetchrow(
+            """
+            INSERT INTO external_service_tokens (
+                subject, service, access_token, refresh_token, expires_at,
+                raw_payload, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+            ON CONFLICT (subject, service) DO UPDATE
+            SET access_token = EXCLUDED.access_token,
+                refresh_token = EXCLUDED.refresh_token,
+                expires_at = EXCLUDED.expires_at,
+                raw_payload = EXCLUDED.raw_payload,
+                updated_at = NOW()
+            RETURNING subject, service, access_token, refresh_token, expires_at,
+                      raw_payload, created_at, updated_at
+            """,
+            subject,
+            service,
+            access_token,
+            refresh_token,
+            expires_at_datetime,
+            _jsonb_value(raw_payload),
+        )
+        payload = self._require_row_dict(
+            row,
+            "Expected INSERT ... RETURNING for external_service_tokens.",
+        )
+        if row is not None and row["expires_at"] is not None:
+            payload["expires_at"] = int(row["expires_at"].timestamp())
+        return payload
 
     async def delete_activity(
         self,

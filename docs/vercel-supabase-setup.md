@@ -46,6 +46,7 @@ This repo uses a small wellness schema with these tables:
 - `daily_meals`
 - `meal_items`
 - `activity_entries`
+- `external_service_tokens`
 - `memory_items`
 
 You can let the app create the table automatically on first successful

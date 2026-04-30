@@ -47,6 +47,7 @@ The current schema includes:
 - `daily_meals`
 - `meal_items`
 - `activity_entries`
+- `external_service_tokens`
 - `memory_items`
 
 Product rows include an internal `usage_count` that starts at `0` and

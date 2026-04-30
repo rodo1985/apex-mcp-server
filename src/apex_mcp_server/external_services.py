@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -15,7 +15,36 @@ from apex_mcp_server.storage import UserStore
 LOCAL_TIME_ZONE = ZoneInfo("Europe/Madrid")
 STRAVA_API_BASE_URL = "https://www.strava.com/api/v3"
 STRAVA_SOURCE = "strava"
-STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
+STRAVA_TOKEN_URL = "https://www.strava.com/api/v3/oauth/token"
+
+
+class StravaAPIError(RuntimeError):
+    """Raised when Strava returns an unsuccessful HTTP response.
+
+    Parameters:
+        message: Safe error message that does not include token values.
+        status_code: HTTP status code returned by Strava.
+
+    Returns:
+        StravaAPIError: Exception carrying the Strava HTTP status code.
+
+    Raises:
+        This initializer does not raise errors directly.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        """Store the safe error message and Strava HTTP status code.
+
+        Parameters:
+            message: Safe error message that does not include token values.
+            status_code: HTTP status code returned by Strava.
+
+        Returns:
+            None.
+        """
+
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +54,8 @@ class StravaCredentials:
     Parameters:
         client_id: Strava application client id.
         client_secret: Strava application client secret.
-        refresh_token: Strava refresh token owned by the connected athlete.
+        refresh_token: Optional env-seeded Strava refresh token used when no
+            stored token exists or when a stored token has been replaced.
 
     Returns:
         StravaCredentials: Normalized credentials read from runtime settings.
@@ -36,7 +66,30 @@ class StravaCredentials:
 
     client_id: str
     client_secret: str
+    refresh_token: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StravaTokenResponse:
+    """Store a refreshed Strava token response.
+
+    Parameters:
+        access_token: Short-lived access token used for activity API calls.
+        refresh_token: Latest refresh token that must be persisted.
+        expires_at: Unix timestamp when `access_token` expires.
+        raw_payload: Safe metadata from Strava's token response.
+
+    Returns:
+        StravaTokenResponse: Parsed token response from Strava.
+
+    Raises:
+        This dataclass does not raise errors directly.
+    """
+
+    access_token: str
     refresh_token: str
+    expires_at: int | None
+    raw_payload: dict[str, object]
 
 
 async def sync_external_service(
@@ -160,9 +213,12 @@ async def sync_strava_activities(
     warnings: list[str] = []
 
     try:
-        access_token, token_warnings = await _refresh_strava_access_token(
-            client,
-            credentials,
+        access_token, token_warnings = await _get_valid_strava_access_token(
+            settings=settings,
+            store=store,
+            subject=subject,
+            client=client,
+            credentials=credentials,
         )
         warnings.extend(token_warnings)
 
@@ -298,16 +354,16 @@ def map_strava_activity_to_storage(
 
 
 def _require_strava_credentials(settings: Settings) -> StravaCredentials:
-    """Return Strava credentials or fail with one safe configuration error.
+    """Return Strava client credentials and optional env refresh-token seed.
 
     Parameters:
         settings: Runtime settings to inspect.
 
     Returns:
-        StravaCredentials: Complete Strava API configuration.
+        StravaCredentials: Strava API configuration.
 
     Raises:
-        SettingsError: If any Strava credential is missing.
+        SettingsError: If Strava client id or secret is missing.
     """
 
     missing = [
@@ -315,35 +371,124 @@ def _require_strava_credentials(settings: Settings) -> StravaCredentials:
         for name, value in {
             "STRAVA_CLIENT_ID": settings.strava_client_id,
             "STRAVA_CLIENT_SECRET": settings.strava_client_secret,
-            "STRAVA_REFRESH_TOKEN": settings.strava_refresh_token,
         }.items()
         if value is None
     ]
     if missing:
         raise SettingsError(
-            "Strava sync requires STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, "
-            "and STRAVA_REFRESH_TOKEN."
+            "Strava sync requires STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET."
         )
 
     return StravaCredentials(
         client_id=str(settings.strava_client_id),
         client_secret=str(settings.strava_client_secret),
-        refresh_token=str(settings.strava_refresh_token),
+        refresh_token=settings.strava_refresh_token,
     )
+
+
+async def _get_valid_strava_access_token(
+    settings: Settings,
+    store: UserStore,
+    subject: str,
+    client: httpx.AsyncClient,
+    credentials: StravaCredentials,
+) -> tuple[str, list[str]]:
+    """Return a usable Strava access token and persist any rotated token.
+
+    Parameters:
+        settings: Runtime settings with the env refresh-token seed.
+        store: User storage backend used for persisted token bundles.
+        subject: Storage subject for the current MCP caller.
+        client: HTTP client used for Strava API requests.
+        credentials: Strava client credentials and optional env token seed.
+
+    Returns:
+        tuple[str, list[str]]: Access token plus non-secret sync warnings.
+
+    Raises:
+        SettingsError: If neither Postgres nor env contains a refresh token.
+        RuntimeError: If Strava rejects all available refresh tokens.
+    """
+
+    warnings: list[str] = []
+    stored_token = await store.get_external_service_token(subject, STRAVA_SOURCE)
+    stored_access_token = _string_value(
+        stored_token.get("access_token") if stored_token else None
+    )
+    stored_refresh_token = _string_value(
+        stored_token.get("refresh_token") if stored_token else None
+    )
+    stored_expires_at = _int_value(
+        stored_token.get("expires_at") if stored_token else None
+    )
+    now_ts = int(datetime.now(tz=UTC).timestamp())
+
+    if (
+        stored_access_token is not None
+        and stored_expires_at is not None
+        and stored_expires_at > now_ts + 120
+    ):
+        return stored_access_token, warnings
+
+    refresh_candidates = _refresh_token_candidates(
+        stored_refresh_token,
+        credentials.refresh_token,
+    )
+    if not refresh_candidates:
+        raise SettingsError(
+            "Strava sync requires STRAVA_REFRESH_TOKEN until the first "
+            "successful token refresh is stored in Postgres."
+        )
+
+    last_error: StravaAPIError | None = None
+    for source, refresh_token in refresh_candidates:
+        try:
+            refreshed = await _refresh_strava_access_token(
+                client,
+                credentials,
+                refresh_token,
+            )
+        except StravaAPIError as exc:
+            last_error = exc
+            if exc.status_code == 401 and source == "stored":
+                warnings.append(
+                    "Stored Strava refresh token was rejected; retrying with "
+                    "the environment refresh token seed."
+                )
+                continue
+            raise
+
+        await store.save_external_service_token(
+            subject=subject,
+            service=STRAVA_SOURCE,
+            access_token=refreshed.access_token,
+            refresh_token=refreshed.refresh_token,
+            expires_at=refreshed.expires_at,
+            raw_payload=refreshed.raw_payload,
+        )
+        if refreshed.refresh_token != refresh_token:
+            warnings.append("Strava rotated the refresh token and saved it.")
+        return refreshed.access_token, warnings
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Strava token refresh failed before returning a token.")
 
 
 async def _refresh_strava_access_token(
     client: httpx.AsyncClient,
     credentials: StravaCredentials,
-) -> tuple[str, list[str]]:
+    refresh_token: str,
+) -> StravaTokenResponse:
     """Refresh the Strava access token for the current sync call.
 
     Parameters:
         client: HTTP client used for the token request.
         credentials: Strava credentials read from settings.
+        refresh_token: Latest refresh token available for the subject.
 
     Returns:
-        tuple[str, list[str]]: Access token plus non-secret warnings.
+        StravaTokenResponse: Parsed token response to use and persist.
 
     Raises:
         RuntimeError: If Strava returns an error or no access token.
@@ -354,7 +499,7 @@ async def _refresh_strava_access_token(
         data={
             "client_id": credentials.client_id,
             "client_secret": credentials.client_secret,
-            "refresh_token": credentials.refresh_token,
+            "refresh_token": refresh_token,
             "grant_type": "refresh_token",
         },
     )
@@ -365,15 +510,41 @@ async def _refresh_strava_access_token(
     if access_token is None:
         raise RuntimeError("Strava token refresh did not return an access token.")
 
-    warnings: list[str] = []
     new_refresh_token = _string_value(payload.get("refresh_token"))
-    if new_refresh_token and new_refresh_token != credentials.refresh_token:
-        warnings.append(
-            "Strava returned a rotated refresh token. Update "
-            "STRAVA_REFRESH_TOKEN in local or Vercel environment settings."
-        )
+    if new_refresh_token is None:
+        raise RuntimeError("Strava token refresh did not return a refresh token.")
 
-    return access_token, warnings
+    return StravaTokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        expires_at=_int_value(payload.get("expires_at")),
+        raw_payload=_safe_token_payload(payload),
+    )
+
+
+def _refresh_token_candidates(
+    stored_refresh_token: str | None,
+    env_refresh_token: str | None,
+) -> list[tuple[str, str]]:
+    """Return refresh-token candidates in retry order without duplicates.
+
+    Parameters:
+        stored_refresh_token: Latest refresh token saved in Postgres.
+        env_refresh_token: Environment refresh-token seed.
+
+    Returns:
+        list[tuple[str, str]]: `(source, token)` pairs to try.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    candidates: list[tuple[str, str]] = []
+    if stored_refresh_token:
+        candidates.append(("stored", stored_refresh_token))
+    if env_refresh_token and env_refresh_token != stored_refresh_token:
+        candidates.append(("env", env_refresh_token))
+    return candidates
 
 
 async def _list_strava_activity_summaries(
@@ -525,8 +696,9 @@ def _raise_for_strava_status(response: httpx.Response, operation: str) -> None:
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise RuntimeError(
-            f"Strava {operation} failed with HTTP {response.status_code}."
+        raise StravaAPIError(
+            f"Strava {operation} failed with HTTP {response.status_code}.",
+            response.status_code,
         ) from exc
 
 
@@ -574,6 +746,29 @@ def _json_list(response: httpx.Response, operation: str) -> list[object]:
     if not isinstance(payload, list):
         raise RuntimeError(f"Strava {operation} returned an unexpected payload.")
     return payload
+
+
+def _safe_token_payload(payload: dict[str, Any]) -> dict[str, object]:
+    """Return token response metadata without duplicating secret token values.
+
+    Parameters:
+        payload: Raw Strava token refresh response.
+
+    Returns:
+        dict[str, object]: Non-secret metadata safe to store for diagnostics.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    safe_payload: dict[str, object] = {}
+    for key in ("token_type", "expires_at", "expires_in", "scope"):
+        if key in payload:
+            safe_payload[key] = payload[key]
+    athlete = payload.get("athlete")
+    if isinstance(athlete, dict) and "id" in athlete:
+        safe_payload["athlete_id"] = athlete["id"]
+    return safe_payload
 
 
 def _string_value(value: object | None) -> str | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -41,6 +42,7 @@ class FakeExternalActivityStore:
         """
 
         self.rows: dict[tuple[str, str, str], dict[str, object]] = {}
+        self.tokens: dict[tuple[str, str], dict[str, object]] = {}
         self.next_id = 1
 
     async def upsert_external_activity(
@@ -71,6 +73,58 @@ class FakeExternalActivityStore:
         self.next_id += 1
         self.rows[key] = row
         return {"action": "inserted", "item": deepcopy(row)}
+
+    async def get_external_service_token(
+        self,
+        subject: str,
+        service: str,
+    ) -> dict[str, object] | None:
+        """Return a saved token row for one subject and service.
+
+        Parameters:
+            subject: Subject that owns the token.
+            service: External service name.
+
+        Returns:
+            dict[str, object] | None: Stored token row, or `None`.
+        """
+
+        row = self.tokens.get((subject, service))
+        return deepcopy(row) if row is not None else None
+
+    async def save_external_service_token(
+        self,
+        subject: str,
+        service: str,
+        access_token: str | None,
+        refresh_token: str,
+        expires_at: int | None,
+        raw_payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Store a token row for one subject and service.
+
+        Parameters:
+            subject: Subject that owns the token.
+            service: External service name.
+            access_token: Short-lived access token.
+            refresh_token: Latest refresh token.
+            expires_at: Optional token expiry Unix timestamp.
+            raw_payload: Safe token metadata.
+
+        Returns:
+            dict[str, object]: Stored token row.
+        """
+
+        row = {
+            "subject": subject,
+            "service": service,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "raw_payload": raw_payload,
+        }
+        self.tokens[(subject, service)] = row
+        return deepcopy(row)
 
 
 def strava_settings() -> Settings:
@@ -261,6 +315,9 @@ async def test_strava_sync_fetches_details_and_upserts_idempotently() -> None:
                 json={
                     "access_token": "access-token",
                     "refresh_token": "rotated-refresh-token",
+                    "expires_at": 4_102_444_800,
+                    "expires_in": 21_600,
+                    "token_type": "Bearer",
                 },
             )
 
@@ -329,10 +386,90 @@ async def test_strava_sync_fetches_details_and_upserts_idempotently() -> None:
     assert first_summary["updated_count"] == 0
     assert first_summary["skipped_count"] == 1
     assert first_summary["activity_ids"] == [1]
-    assert "rotated refresh token" in warning_text
+    stored_token = store.tokens[("subject-1", "strava")]
+
+    assert "rotated" in warning_text
     assert "rotated-refresh-token" not in warning_text
     assert second_summary["inserted_count"] == 0
     assert second_summary["updated_count"] == 1
     assert len(store.rows) == 1
+    assert stored_token["access_token"] == "access-token"
+    assert stored_token["refresh_token"] == "rotated-refresh-token"
+    assert stored_token["raw_payload"] == {
+        "token_type": "Bearer",
+        "expires_at": 4_102_444_800,
+        "expires_in": 21_600,
+    }
     assert stored_row["title"] == "Morning run"
     assert stored_row["calories"] == 600.0
+
+
+@pytest.mark.asyncio
+async def test_strava_sync_retries_env_token_when_stored_token_is_rejected() -> None:
+    """Ensure a stale stored refresh token can recover from the env seed.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Return a 401 for stale DB token and success for env token.
+
+        Parameters:
+            request: Outgoing HTTP request made by the sync helper.
+
+        Returns:
+            httpx.Response: Mocked Strava API response.
+        """
+
+        if str(request.url) == STRAVA_TOKEN_URL:
+            form = parse_qs(request.content.decode())
+            refresh_token = form["refresh_token"][0]
+            if refresh_token == "stale-db-token":
+                return httpx.Response(401, json={"message": "Authorization Error"})
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "env-access-token",
+                    "refresh_token": "env-refresh-token-rotated",
+                    "expires_at": 4_102_444_800,
+                },
+            )
+
+        if request.url.path == "/api/v3/athlete/activities":
+            return httpx.Response(200, json=[])
+
+        return httpx.Response(404, json={"message": "unexpected request"})
+
+    store = FakeExternalActivityStore()
+    await store.save_external_service_token(
+        subject="subject-1",
+        service="strava",
+        access_token="old-access-token",
+        refresh_token="stale-db-token",
+        expires_at=0,
+        raw_payload={},
+    )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        summary = await sync_external_service(
+            settings=strava_settings(),
+            store=store,  # type: ignore[arg-type]
+            subject="subject-1",
+            service="strava",
+            day="2026-04-29",
+            http_client=client,
+        )
+
+    warning_text = " ".join(str(item) for item in summary["warnings"])
+    stored_token = store.tokens[("subject-1", "strava")]
+
+    assert "Stored Strava refresh token was rejected" in warning_text
+    assert "stale-db-token" not in warning_text
+    assert stored_token["access_token"] == "env-access-token"
+    assert stored_token["refresh_token"] == "env-refresh-token-rotated"
+    assert summary["fetched_count"] == 0

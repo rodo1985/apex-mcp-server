@@ -46,6 +46,7 @@ class InMemoryUserStore(UserStore):
         self.meals: dict[str, dict[int, dict[str, object]]] = {}
         self.meal_items: dict[str, dict[int, dict[str, object]]] = {}
         self.activities: dict[str, dict[int, dict[str, object]]] = {}
+        self.external_tokens: dict[str, dict[str, dict[str, object]]] = {}
         self.memory_items: dict[str, dict[int, dict[str, object]]] = {}
         self._counters = {
             "product": 0,
@@ -1317,6 +1318,41 @@ class InMemoryUserStore(UserStore):
             notes_markdown=str(activity.get("notes_markdown") or ""),
         )
         return {"action": "updated", "item": item}
+
+    async def get_external_service_token(
+        self,
+        subject: str,
+        service: str,
+    ) -> dict[str, object] | None:
+        """Return a stored external service token for one subject."""
+
+        row = self.external_tokens.get(subject, {}).get(service)
+        return self._copy(row) if row is not None else None
+
+    async def save_external_service_token(
+        self,
+        subject: str,
+        service: str,
+        access_token: str | None,
+        refresh_token: str,
+        expires_at: int | None,
+        raw_payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Store the latest external service token for one subject."""
+
+        now = self._timestamp()
+        row = {
+            "subject": subject,
+            "service": service,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "raw_payload": raw_payload,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.external_tokens.setdefault(subject, {})[service] = row
+        return self._copy(row)
 
     async def delete_activity(
         self,

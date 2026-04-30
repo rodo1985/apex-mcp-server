@@ -141,6 +141,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_activity_entries_external
     ON activity_entries (subject, external_source, external_activity_id)
     WHERE external_source IS NOT NULL AND external_activity_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS external_service_tokens (
+    subject TEXT NOT NULL,
+    service TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT NOT NULL,
+    expires_at TIMESTAMPTZ,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (subject, service)
+);
+
 CREATE TABLE IF NOT EXISTS memory_items (
     id BIGSERIAL PRIMARY KEY,
     subject TEXT NOT NULL,
