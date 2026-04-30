@@ -152,7 +152,7 @@ For deployed environments, put secrets in the Vercel project settings:
 
 For local development, keep secrets local only. Two simple options are:
 
-1. Copy `.env.example` to `.env.local`
+1. Copy `.env.example` to `.env`
 2. Use `vercel env pull` to copy Vercel env vars into a local env file that stays out of git
 
 Do not commit bearer tokens, database passwords, or Strava secrets into the repo.

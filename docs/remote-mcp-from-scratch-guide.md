@@ -88,7 +88,7 @@ make docker-down
 Commit an example env file such as `.env.example`, then copy it locally:
 
 ```bash
-cp .env.example .env.local
+cp .env.example .env
 ```
 
 Recommended local defaults:

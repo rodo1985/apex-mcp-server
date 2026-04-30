@@ -64,7 +64,7 @@ uv sync
 Copy the example file and keep your local values there:
 
 ```bash
-cp .env.example .env.local
+cp .env.example .env
 ```
 
 ### 5. Optional: use the Makefile helpers

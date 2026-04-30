@@ -76,7 +76,7 @@ db-up:
 
 run:
 	@set -a; \
-	if [ -f .env.local ]; then . ./.env.local; fi; \
+	if [ -f .env ]; then . ./.env; fi; \
 	set +a; \
 	DATABASE_URL="$${DATABASE_URL:-$(DATABASE_URL)}" \
 	$(UVICORN) index:app --reload --host $(HOST) --port $(PORT)
@@ -88,7 +88,7 @@ run-private:
 		exit 1; \
 	fi
 	@set -a; \
-	if [ -f .env.local ]; then . ./.env.local; fi; \
+	if [ -f .env ]; then . ./.env; fi; \
 	set +a; \
 	MCP_API_TOKEN="$(MCP_API_TOKEN)" \
 	DATABASE_URL="$${DATABASE_URL:-$(DATABASE_URL)}" \
@@ -109,7 +109,7 @@ test:
 		printf "\n$(BOLD)$(YELLOW)Docker daemon not available. Running pytest without auto-starting Postgres.$(RESET)\n\n"; \
 	fi
 	@set -a; \
-	if [ -f .env.local ]; then . ./.env.local; fi; \
+	if [ -f .env ]; then . ./.env; fi; \
 	set +a; \
 	DATABASE_URL="$${DATABASE_URL:-$(DATABASE_URL)}" \
 	$(PYTHON) -m pytest
