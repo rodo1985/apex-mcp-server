@@ -250,8 +250,10 @@ Important:
 - `MCP_PUBLIC_BASE_URL` is the base URL only
 - do not include `/mcp` in `MCP_PUBLIC_BASE_URL`
 - `WORKOS_AUTHKIT_DOMAIN` is your AuthKit domain, not your app URL
-- add `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, and
-  `STRAVA_REFRESH_TOKEN` only if this deployment should sync Strava activities
+- add `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET` only if this deployment
+  should sync Strava activities; `STRAVA_REFRESH_TOKEN` is a recovery seed
+- use `/auth/strava/start` after deploy to grant Strava activity access to the
+  MCP server; the agent's MCP OAuth connection does not grant Strava access
 
 ## 10. Vercel protection setting
 

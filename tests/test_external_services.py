@@ -13,8 +13,12 @@ import pytest
 from apex_mcp_server.config import Settings, SettingsError
 from apex_mcp_server.external_services import (
     STRAVA_API_BASE_URL,
+    STRAVA_AUTHORIZE_URL,
     STRAVA_TOKEN_URL,
+    build_strava_authorization_url,
+    connect_strava_account,
     map_strava_activity_to_storage,
+    resolve_strava_redirect_uri,
     resolve_sync_day,
     sync_external_service,
 )
@@ -180,6 +184,169 @@ def test_resolve_sync_day_rejects_invalid_values() -> None:
 
     with pytest.raises(ValueError, match="day must be"):
         resolve_sync_day("next week")
+
+
+def test_strava_authorization_url_requests_activity_scope() -> None:
+    """Ensure the browser connect URL asks Strava for activity access.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    settings = strava_settings()
+
+    url = build_strava_authorization_url(settings, state="connect-test")
+    parsed = httpx.URL(url)
+    query = parse_qs(parsed.query.decode())
+
+    assert str(parsed.copy_with(query=None)) == STRAVA_AUTHORIZE_URL
+    assert query["client_id"] == ["client-id"]
+    assert query["redirect_uri"] == ["http://127.0.0.1:8000/auth/strava/callback"]
+    assert query["approval_prompt"] == ["force"]
+    assert query["scope"] == ["read,activity:read_all"]
+    assert query["state"] == ["connect-test"]
+
+
+def test_strava_redirect_uri_uses_public_base_url_when_configured() -> None:
+    """Ensure hosted deployments derive a callback URL from the public base URL.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    settings = Settings(
+        app_name="APEX FastMCP Profile Pilot",
+        version="0.1.0",
+        auth_mode="none",
+        api_token=None,
+        public_base_url="https://apex.example.com/",
+        workos_authkit_domain=None,
+        database_url="postgresql://demo:demo@localhost:5432/demo",
+        strava_client_id="client-id",
+        strava_client_secret="client-secret",
+    )
+
+    assert (
+        resolve_strava_redirect_uri(settings)
+        == "https://apex.example.com/auth/strava/callback"
+    )
+
+
+@pytest.mark.asyncio
+async def test_connect_strava_account_exchanges_code_and_saves_token() -> None:
+    """Ensure OAuth callback handling saves a token without returning secrets.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Return a fake token exchange response.
+
+        Parameters:
+            request: Outgoing HTTP request made by the OAuth helper.
+
+        Returns:
+            httpx.Response: Mocked Strava token response.
+        """
+
+        assert str(request.url) == STRAVA_TOKEN_URL
+        form = parse_qs(request.content.decode())
+        assert form["code"] == ["oauth-code"]
+        assert form["grant_type"] == ["authorization_code"]
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "refresh-token-from-code",
+                "expires_at": 4_102_444_800,
+                "expires_in": 21_600,
+                "token_type": "Bearer",
+                "scope": "read,activity:read_all",
+                "athlete": {"id": 999},
+            },
+        )
+
+    store = FakeExternalActivityStore()
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        summary = await connect_strava_account(
+            settings=strava_settings(),
+            store=store,  # type: ignore[arg-type]
+            code="oauth-code",
+            granted_scope="read,activity:read_all",
+            http_client=client,
+        )
+
+    stored_token = store.tokens[("strava-singleton", "strava")]
+
+    assert summary == {
+        "service": "strava",
+        "status": "connected",
+        "token_subject": "strava-singleton",
+        "athlete_id": 999,
+        "granted_scope": "read,activity:read_all",
+        "expires_at": 4_102_444_800,
+        "warnings": [],
+    }
+    assert stored_token["refresh_token"] == "refresh-token-from-code"
+    assert "access-token" not in str(summary)
+    assert "refresh-token-from-code" not in str(summary)
+
+
+@pytest.mark.asyncio
+async def test_connect_strava_account_warns_when_activity_scope_is_missing() -> None:
+    """Ensure a read-only Strava connection explains why sync will fail.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Return a fake read-only token response.
+
+        Parameters:
+            request: Outgoing HTTP request made by the OAuth helper.
+
+        Returns:
+            httpx.Response: Mocked Strava token response.
+        """
+
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_at": 4_102_444_800,
+                "scope": "read",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        summary = await connect_strava_account(
+            settings=strava_settings(),
+            store=FakeExternalActivityStore(),  # type: ignore[arg-type]
+            code="oauth-code",
+            granted_scope="read",
+            http_client=client,
+        )
+
+    warning_text = " ".join(str(item) for item in summary["warnings"])
+
+    assert "activity:read" in warning_text
 
 
 @pytest.mark.asyncio
@@ -386,7 +553,7 @@ async def test_strava_sync_fetches_details_and_upserts_idempotently() -> None:
     assert first_summary["updated_count"] == 0
     assert first_summary["skipped_count"] == 1
     assert first_summary["activity_ids"] == [1]
-    stored_token = store.tokens[("subject-1", "strava")]
+    stored_token = store.tokens[("strava-singleton", "strava")]
 
     assert "rotated" in warning_text
     assert "rotated-refresh-token" not in warning_text
@@ -446,7 +613,7 @@ async def test_strava_sync_retries_env_token_when_stored_token_is_rejected() -> 
 
     store = FakeExternalActivityStore()
     await store.save_external_service_token(
-        subject="subject-1",
+        subject="strava-singleton",
         service="strava",
         access_token="old-access-token",
         refresh_token="stale-db-token",
@@ -466,7 +633,7 @@ async def test_strava_sync_retries_env_token_when_stored_token_is_rejected() -> 
         )
 
     warning_text = " ".join(str(item) for item in summary["warnings"])
-    stored_token = store.tokens[("subject-1", "strava")]
+    stored_token = store.tokens[("strava-singleton", "strava")]
 
     assert "Stored Strava refresh token was rejected" in warning_text
     assert "stale-db-token" not in warning_text

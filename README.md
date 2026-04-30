@@ -27,7 +27,8 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
   - activity entries
   - memory items
 - Supports Strava activity sync with env-seeded credentials, persisted token
-  rotation, and idempotent writes by Strava activity id.
+  rotation, a small browser OAuth connect helper, and idempotent writes by
+  Strava activity id.
 - Supports three auth modes:
   - `none` for quick local experiments
   - `bearer` for protected local or direct-client use
@@ -35,7 +36,7 @@ The goal is to keep the proof of concept easy to understand and easy to reuse fo
 - Supports two local workflows:
   - Postgres in Docker + app on the host with `uv`
   - app and Postgres together in Docker Compose
-- Does not include an ORM, Alembic migrations, multi-user admin workflows, or local OAuth login flows.
+- Does not include an ORM, Alembic migrations, or multi-user admin workflows.
 
 ## Setup
 
@@ -190,10 +191,16 @@ MCP_SERVER_VERSION=0.1.0
 STRAVA_CLIENT_ID=your-strava-client-id
 STRAVA_CLIENT_SECRET=your-strava-client-secret
 STRAVA_REFRESH_TOKEN=your-strava-refresh-token
+STRAVA_REDIRECT_URI=https://your-public-domain/auth/strava/callback
+STRAVA_SCOPES=read,activity:read_all
+STRAVA_TOKEN_SUBJECT=strava-singleton
 ```
 
-The Strava variables are optional at server startup. They are required only
-when an agent calls `sync_external_service(service="strava", ...)`.
+The Strava variables are optional at server startup. `STRAVA_CLIENT_ID` and
+`STRAVA_CLIENT_SECRET` are required for the browser connect helper and for
+`sync_external_service(service="strava", ...)`. `STRAVA_REFRESH_TOKEN` is only
+a recovery seed; the easiest path is to open `/auth/strava/start`, approve
+activity access in Strava, and let the callback save the right token.
 
 ### Vercel production setup
 
@@ -212,6 +219,8 @@ Add these optional Strava variables when the deployed agent should sync Strava:
 STRAVA_CLIENT_ID=your-strava-client-id
 STRAVA_CLIENT_SECRET=your-strava-client-secret
 STRAVA_REFRESH_TOKEN=your-strava-refresh-token
+STRAVA_SCOPES=read,activity:read_all
+STRAVA_TOKEN_SUBJECT=strava-singleton
 ```
 
 For the full manual Vercel deployment and remote testing guide, see [docs/vercel-deploy.md](/Users/REDONSX1/Documents/code/01%20personal/apex-mcp-server/docs/vercel-deploy.md).
@@ -254,11 +263,25 @@ fetches Strava activities for that day, and upserts them into
 `activity_entries` by Strava activity id. Re-running the same day updates the
 existing synced rows instead of creating duplicates.
 
-For Strava, create an app in Strava, authorize it with `activity:read`, and use
-`activity:read_all` if private "Only Me" activities should sync. The env
-`STRAVA_REFRESH_TOKEN` is the initial seed. After a successful sync, the latest
-rotated refresh token is saved in Postgres per MCP subject so normal token
-rotation does not require editing Vercel env vars.
+For Strava, create an app in Strava, then open the browser connect helper after
+the server is running:
+
+```text
+http://127.0.0.1:8000/auth/strava/start
+```
+
+In production, open:
+
+```text
+https://your-public-domain/auth/strava/start
+```
+
+This is the Strava OAuth step that grants the MCP server activity access. It is
+separate from the OAuth connection between your AI agent and this MCP server.
+`STRAVA_SCOPES` defaults to `read,activity:read_all` so private "Only Me"
+activities can sync. The callback saves the latest refresh token in Postgres
+under `STRAVA_TOKEN_SUBJECT` so normal token rotation does not require editing
+Vercel env vars.
 
 ## Recommended Workflow
 

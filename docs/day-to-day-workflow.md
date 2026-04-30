@@ -123,7 +123,8 @@ For normal code-only releases, you should not need to change:
 - `MCP_AUTH_MODE`
 - `MCP_PUBLIC_BASE_URL`
 - `WORKOS_AUTHKIT_DOMAIN`
-- `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, and `STRAVA_REFRESH_TOKEN`
+- `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `STRAVA_REFRESH_TOKEN`,
+  `STRAVA_SCOPES`, and `STRAVA_TOKEN_SUBJECT`
 - Supabase table structure, unless you are making a schema change
 
 That means most updates are just:
@@ -144,7 +145,7 @@ Touch infrastructure only when one of these changes:
 - the database password
 - the Vercel production domain
 - the WorkOS AuthKit project/domain
-- the Strava app credentials or refresh token
+- the Strava app credentials, scopes, token subject, or browser connection
 - the Claude-facing OAuth behavior
 
 Examples:
@@ -154,9 +155,9 @@ Examples:
   resource indicator.
 - If the schema changes, apply the new SQL to Supabase and keep local Docker
   schema init in sync.
-- If you manually regenerate Strava OAuth tokens, update `STRAVA_REFRESH_TOKEN`
-  in Vercel and redeploy. Normal Strava token rotation is saved in Postgres by
-  the sync tool after the first successful sync.
+- If Strava activity sync starts returning missing-scope `401` responses, open
+  `/auth/strava/start` and approve the requested activity access again. Normal
+  Strava token rotation is saved in Postgres by the sync tool.
 
 ## 7. Recommended validation after deploy
 

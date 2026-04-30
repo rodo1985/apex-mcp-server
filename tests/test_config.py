@@ -186,12 +186,18 @@ def test_settings_load_optional_strava_credentials(monkeypatch) -> None:
     monkeypatch.setenv("STRAVA_CLIENT_ID", " client-id ")
     monkeypatch.setenv("STRAVA_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "refresh-token")
+    monkeypatch.setenv("STRAVA_REDIRECT_URI", " https://example.com/callback ")
+    monkeypatch.setenv("STRAVA_SCOPES", "read,activity:read_all")
+    monkeypatch.setenv("STRAVA_TOKEN_SUBJECT", "strava-token-owner")
 
     settings = Settings.from_env()
 
     assert settings.strava_client_id == "client-id"
     assert settings.strava_client_secret == "client-secret"
     assert settings.strava_refresh_token == "refresh-token"
+    assert settings.strava_redirect_uri == "https://example.com/callback"
+    assert settings.strava_scopes == "read,activity:read_all"
+    assert settings.strava_token_subject == "strava-token-owner"
 
 
 def test_settings_do_not_require_strava_credentials(monkeypatch) -> None:
@@ -211,12 +217,18 @@ def test_settings_do_not_require_strava_credentials(monkeypatch) -> None:
     monkeypatch.delenv("STRAVA_CLIENT_ID", raising=False)
     monkeypatch.delenv("STRAVA_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("STRAVA_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("STRAVA_REDIRECT_URI", raising=False)
+    monkeypatch.delenv("STRAVA_SCOPES", raising=False)
+    monkeypatch.delenv("STRAVA_TOKEN_SUBJECT", raising=False)
 
     settings = Settings.from_env()
 
     assert settings.strava_client_id is None
     assert settings.strava_client_secret is None
     assert settings.strava_refresh_token is None
+    assert settings.strava_redirect_uri is None
+    assert settings.strava_scopes == "read,activity:read_all"
+    assert settings.strava_token_subject == "strava-singleton"
 
 
 def test_build_user_store_returns_postgres_store() -> None:

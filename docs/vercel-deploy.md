@@ -140,10 +140,14 @@ MCP_SERVER_VERSION=0.1.0
 STRAVA_CLIENT_ID=your-strava-client-id
 STRAVA_CLIENT_SECRET=your-strava-client-secret
 STRAVA_REFRESH_TOKEN=your-strava-refresh-token
+STRAVA_SCOPES=read,activity:read_all
+STRAVA_TOKEN_SUBJECT=strava-singleton
 ```
 
 The Strava variables are needed only if the deployed MCP agent should call
-`sync_external_service(service="strava", ...)`.
+`sync_external_service(service="strava", ...)`. `STRAVA_REFRESH_TOKEN` is only
+a recovery seed when `/auth/strava/start` has not connected the Strava account
+yet.
 
 ## Where to store secrets
 
@@ -182,6 +186,9 @@ vercel env add STRAVA_CLIENT_ID production
 vercel env add STRAVA_CLIENT_SECRET production
 vercel env add STRAVA_REFRESH_TOKEN production
 ```
+
+`STRAVA_SCOPES` and `STRAVA_TOKEN_SUBJECT` have useful defaults. Set them only
+if you need to override `read,activity:read_all` or the singleton token subject.
 
 3. Deploy to production:
 
@@ -232,6 +239,9 @@ Use this checklist when you want to make the Vercel deployment reachable by Clau
 9. Call `whoami` first to confirm the remote identity is correct.
 10. Verify at least one document write, one tabular write, one daily metric
     write, and one collection write round-trip successfully.
+11. If Strava sync is enabled, open
+    `https://your-public-domain/auth/strava/start`, approve Strava activity
+    access, then call `sync_external_service(service="strava", day="today")`.
 
 If you change the published MCP tool surface or authentication behavior, remove and re-add the Claude connector or reconnect it so Claude refreshes its tokens and tool schema.
 

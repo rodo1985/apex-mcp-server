@@ -15,6 +15,8 @@ entries.
 - One supported service value: `strava`
 - One Strava API path for daily activity summaries
 - One Strava API path for per-activity details
+- One browser helper route pair for Strava OAuth connection:
+  `/auth/strava/start` and `/auth/strava/callback`
 - One storage upsert path into `activity_entries`
 - One small token table for the latest Strava OAuth token bundle
 
@@ -22,7 +24,9 @@ The existing `activity_entries` table already has `external_source`,
 `external_activity_id`, detailed activity fields, JSON payload columns, and a
 uniqueness index for external activity ids. The `external_service_tokens` table
 stores the latest Strava access token, refresh token, expiry time, and safe
-token metadata per MCP subject.
+token metadata. Strava token storage is singleton-style by default
+(`STRAVA_TOKEN_SUBJECT=strava-singleton`) because this private pilot connects
+one athlete account for the agent.
 
 ## Tool Usage
 
@@ -57,15 +61,25 @@ settings:
 STRAVA_CLIENT_ID=your-strava-client-id
 STRAVA_CLIENT_SECRET=your-strava-client-secret
 STRAVA_REFRESH_TOKEN=your-strava-refresh-token
+STRAVA_REDIRECT_URI=https://your-public-domain/auth/strava/callback
+STRAVA_SCOPES=read,activity:read_all
+STRAVA_TOKEN_SUBJECT=strava-singleton
 ```
 
 The server can start without these variables. `STRAVA_CLIENT_ID` and
-`STRAVA_CLIENT_SECRET` are required when the tool is called with
-`service="strava"`. `STRAVA_REFRESH_TOKEN` is required for the first successful
-sync for a subject, then Postgres stores the latest rotated refresh token.
+`STRAVA_CLIENT_SECRET` are required when the browser connect helper is used or
+when the tool is called with `service="strava"`. `STRAVA_REFRESH_TOKEN` is a
+manual recovery seed. The preferred setup is to open `/auth/strava/start`,
+grant activity access in Strava, and let `/auth/strava/callback` save the
+refresh token in Postgres.
+
+This Strava OAuth step is separate from the OAuth connection between the AI
+agent and this MCP server. The agent's MCP OAuth token proves it can call the
+server; Strava OAuth proves the server can read your Strava activities.
 
 Use the Strava scope `activity:read`. Use `activity:read_all` if private
-"Only Me" activities should sync.
+"Only Me" activities should sync. The default `STRAVA_SCOPES` value is
+`read,activity:read_all`.
 
 Strava may return a rotated refresh token during token refresh. The tool saves
 that latest token in Postgres and uses it on later syncs. If a stored token is
@@ -78,9 +92,13 @@ regenerating and redeploying the env seed.
 
 ```mermaid
 flowchart LR
+    Browser["User browser"] --> OAuthStart["/auth/strava/start"]
+    OAuthStart --> StravaConsent["Strava consent"]
+    StravaConsent --> OAuthCallback["/auth/strava/callback"]
+    OAuthCallback --> TokenStore["Postgres token store"]
     Agent["AI agent"] --> Tool["sync_external_service"]
     Tool --> Dispatcher["Service dispatcher"]
-    Dispatcher --> TokenStore["Postgres token store"]
+    Dispatcher --> TokenStore
     TokenStore --> StravaAuth["Strava token refresh"]
     StravaAuth --> StravaList["Strava activity list"]
     StravaAuth --> TokenStore

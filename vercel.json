@@ -4,6 +4,10 @@
     {
       "source": "/mcp",
       "destination": "/api/index.py"
+    },
+    {
+      "source": "/auth/strava/:path*",
+      "destination": "/api/index.py"
     }
   ]
 }

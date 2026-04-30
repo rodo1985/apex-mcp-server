@@ -45,6 +45,13 @@ class Settings:
             Strava token refresh during activity sync.
         strava_refresh_token: Optional Strava refresh token used to request a
             short-lived access token during activity sync.
+        strava_redirect_uri: Optional OAuth callback URI used by the Strava
+            browser connection helper.
+        strava_scopes: OAuth scopes requested by the Strava browser connection
+            helper.
+        strava_token_subject: Storage subject used for the Strava OAuth token
+            row. The default keeps Strava as one singleton connection for this
+            private pilot.
 
     Returns:
         Settings: Fully normalized server configuration.
@@ -68,6 +75,9 @@ class Settings:
     strava_client_id: str | None = None
     strava_client_secret: str | None = None
     strava_refresh_token: str | None = None
+    strava_redirect_uri: str | None = None
+    strava_scopes: str = "read,activity:read_all"
+    strava_token_subject: str = "strava-singleton"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -106,6 +116,17 @@ class Settings:
             ),
             strava_refresh_token=_clean_optional_value(
                 os.environ.get("STRAVA_REFRESH_TOKEN")
+            ),
+            strava_redirect_uri=_clean_optional_value(
+                os.environ.get("STRAVA_REDIRECT_URI")
+            ),
+            strava_scopes=(
+                _clean_optional_value(os.environ.get("STRAVA_SCOPES"))
+                or "read,activity:read_all"
+            ),
+            strava_token_subject=(
+                _clean_optional_value(os.environ.get("STRAVA_TOKEN_SUBJECT"))
+                or "strava-singleton"
             ),
         )
 

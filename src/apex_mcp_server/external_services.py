@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -14,6 +15,8 @@ from apex_mcp_server.storage import UserStore
 
 LOCAL_TIME_ZONE = ZoneInfo("Europe/Madrid")
 STRAVA_API_BASE_URL = "https://www.strava.com/api/v3"
+STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
+STRAVA_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8000/auth/strava/callback"
 STRAVA_SOURCE = "strava"
 STRAVA_TOKEN_URL = "https://www.strava.com/api/v3/oauth/token"
 
@@ -180,6 +183,163 @@ def resolve_sync_day(day: str, now: datetime | None = None) -> date:
         ) from exc
 
 
+def build_strava_authorization_url(
+    settings: Settings,
+    state: str | None = None,
+) -> str:
+    """Build the browser URL used to connect the Strava account.
+
+    Parameters:
+        settings: Runtime settings containing the Strava client id and optional
+            callback URI.
+        state: Optional opaque value echoed back by Strava after consent.
+
+    Returns:
+        str: Strava OAuth authorization URL.
+
+    Raises:
+        SettingsError: If `STRAVA_CLIENT_ID` is missing.
+
+    Example:
+        >>> settings = Settings(
+        ...     app_name="demo",
+        ...     version="0.1.0",
+        ...     auth_mode="none",
+        ...     api_token=None,
+        ...     public_base_url=None,
+        ...     workos_authkit_domain=None,
+        ...     database_url="postgresql://demo/demo",
+        ...     strava_client_id="123",
+        ... )
+        >>> "client_id=123" in build_strava_authorization_url(settings)
+        True
+    """
+
+    client_id = _string_value(settings.strava_client_id)
+    if client_id is None:
+        raise SettingsError("Strava OAuth connect requires STRAVA_CLIENT_ID.")
+
+    query: dict[str, str] = {
+        "client_id": client_id,
+        "redirect_uri": resolve_strava_redirect_uri(settings),
+        "response_type": "code",
+        # Force is intentional: it lets the user re-consent when an old token
+        # only has `read` and needs the activity scopes added.
+        "approval_prompt": "force",
+        "scope": settings.strava_scopes,
+    }
+    if state:
+        query["state"] = state
+
+    return f"{STRAVA_AUTHORIZE_URL}?{urlencode(query)}"
+
+
+def resolve_strava_redirect_uri(settings: Settings) -> str:
+    """Resolve the Strava OAuth callback URI for local or hosted use.
+
+    Parameters:
+        settings: Runtime settings containing optional Strava redirect and
+            public base URL values.
+
+    Returns:
+        str: Absolute callback URI sent to Strava.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    explicit_uri = _string_value(settings.strava_redirect_uri)
+    if explicit_uri is not None:
+        return explicit_uri
+
+    public_base_url = _string_value(settings.public_base_url)
+    if public_base_url is not None:
+        return f"{public_base_url.rstrip('/')}/auth/strava/callback"
+
+    return STRAVA_DEFAULT_REDIRECT_URI
+
+
+async def connect_strava_account(
+    settings: Settings,
+    store: UserStore,
+    code: str,
+    granted_scope: str | None = None,
+    subject: str = "anonymous",
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, object]:
+    """Exchange a Strava OAuth code and save the resulting token bundle.
+
+    Parameters:
+        settings: Runtime settings containing Strava OAuth credentials.
+        store: User storage backend where the token bundle is saved.
+        code: Short-lived OAuth authorization code returned by Strava.
+        granted_scope: Optional scope string echoed back by Strava.
+        subject: Fallback MCP subject for the token row when per-caller token
+            storage is explicitly requested.
+        http_client: Optional HTTP client supplied by tests.
+
+    Returns:
+        dict[str, object]: Safe connection summary without token values.
+
+    Raises:
+        SettingsError: If Strava credentials are missing.
+        RuntimeError: If Strava rejects the code or returns an invalid payload.
+
+    Example:
+        >>> # await connect_strava_account(settings, store, "oauth-code")
+    """
+
+    credentials = _require_strava_credentials(settings)
+    cleaned_code = _string_value(code)
+    if cleaned_code is None:
+        raise ValueError("Strava OAuth callback requires a non-empty code.")
+
+    owns_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    try:
+        token = await _exchange_strava_authorization_code(
+            client,
+            credentials,
+            cleaned_code,
+        )
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    token_subject = _resolve_strava_token_subject(settings, subject)
+    await store.save_external_service_token(
+        subject=token_subject,
+        service=STRAVA_SOURCE,
+        access_token=token.access_token,
+        refresh_token=token.refresh_token,
+        expires_at=token.expires_at,
+        raw_payload=token.raw_payload,
+    )
+
+    scope = (
+        _string_value(granted_scope)
+        or _string_value(token.raw_payload.get("scope"))
+        or settings.strava_scopes
+    )
+    warnings: list[str] = []
+    if not _scope_allows_activity_read(scope):
+        warnings.append(
+            "The granted Strava scope does not include activity:read or "
+            "activity:read_all; activity sync will fail until Strava is "
+            "reconnected with activity access."
+        )
+
+    return {
+        "service": STRAVA_SOURCE,
+        "status": "connected",
+        "token_subject": token_subject,
+        "athlete_id": token.raw_payload.get("athlete_id"),
+        "granted_scope": scope,
+        "expires_at": token.expires_at,
+        "warnings": warnings,
+    }
+
+
 async def sync_strava_activities(
     settings: Settings,
     store: UserStore,
@@ -213,10 +373,11 @@ async def sync_strava_activities(
     warnings: list[str] = []
 
     try:
+        token_subject = _resolve_strava_token_subject(settings, subject)
         access_token, token_warnings = await _get_valid_strava_access_token(
             settings=settings,
             store=store,
-            subject=subject,
+            subject=token_subject,
             client=client,
             credentials=credentials,
         )
@@ -522,6 +683,53 @@ async def _refresh_strava_access_token(
     )
 
 
+async def _exchange_strava_authorization_code(
+    client: httpx.AsyncClient,
+    credentials: StravaCredentials,
+    code: str,
+) -> StravaTokenResponse:
+    """Exchange one OAuth authorization code for a Strava token bundle.
+
+    Parameters:
+        client: HTTP client used for the token request.
+        credentials: Strava client credentials read from settings.
+        code: Short-lived OAuth code returned to the callback route.
+
+    Returns:
+        StravaTokenResponse: Parsed token response to save for future syncs.
+
+    Raises:
+        RuntimeError: If Strava returns an error or no token bundle.
+    """
+
+    response = await client.post(
+        STRAVA_TOKEN_URL,
+        data={
+            "client_id": credentials.client_id,
+            "client_secret": credentials.client_secret,
+            "code": code,
+            "grant_type": "authorization_code",
+        },
+    )
+    _raise_for_strava_status(response, "OAuth code exchange")
+    payload = _json_dict(response, "OAuth code exchange")
+
+    access_token = _string_value(payload.get("access_token"))
+    if access_token is None:
+        raise RuntimeError("Strava OAuth code exchange did not return an access token.")
+
+    refresh_token = _string_value(payload.get("refresh_token"))
+    if refresh_token is None:
+        raise RuntimeError("Strava OAuth code exchange did not return a refresh token.")
+
+    return StravaTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=_int_value(payload.get("expires_at")),
+        raw_payload=_safe_token_payload(payload),
+    )
+
+
 def _refresh_token_candidates(
     stored_refresh_token: str | None,
     env_refresh_token: str | None,
@@ -545,6 +753,43 @@ def _refresh_token_candidates(
     if env_refresh_token and env_refresh_token != stored_refresh_token:
         candidates.append(("env", env_refresh_token))
     return candidates
+
+
+def _resolve_strava_token_subject(settings: Settings, subject: str) -> str:
+    """Return the storage subject used for Strava OAuth token rows.
+
+    Parameters:
+        settings: Runtime settings with optional `STRAVA_TOKEN_SUBJECT`.
+        subject: Current MCP caller subject.
+
+    Returns:
+        str: Token owner used in `external_service_tokens`.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    configured_subject = _string_value(settings.strava_token_subject)
+    if configured_subject is None or configured_subject == "caller":
+        return subject
+    return configured_subject
+
+
+def _scope_allows_activity_read(scope: str) -> bool:
+    """Return whether a Strava scope string can read athlete activities.
+
+    Parameters:
+        scope: Scope string returned by Strava or configured locally.
+
+    Returns:
+        bool: `True` when the scope includes activity read access.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    scopes = {part for part in scope.replace(",", " ").split() if part}
+    return "activity:read" in scopes or "activity:read_all" in scopes
 
 
 async def _list_strava_activity_summaries(
