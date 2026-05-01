@@ -21,6 +21,23 @@ class RouteTokenStore:
             callback.
     """
 
+    async def get_external_service_token(
+        self,
+        subject: str,
+        service: str,
+    ) -> dict[str, object] | None:
+        """Return no saved token for the route status test.
+
+        Parameters:
+            subject: Token owner.
+            service: External service name.
+
+        Returns:
+            dict[str, object] | None: Always `None` for this tiny fake.
+        """
+
+        return None
+
     async def save_external_service_token(
         self,
         subject: str,
@@ -135,3 +152,36 @@ async def test_strava_callback_requires_code() -> None:
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Strava OAuth callback requires a code."}
+
+
+@pytest.mark.asyncio
+async def test_strava_status_route_hides_secret_values() -> None:
+    """Ensure the status route returns safe diagnostic fields.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    app = Starlette()
+    mount_strava_oauth_routes(
+        app,
+        strava_route_settings(),
+        RouteTokenStore(),  # type: ignore[arg-type]
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://apex.example.com",
+    ) as client:
+        response = await client.get("/auth/strava/status")
+
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["client_id"] == "present"
+    assert payload["client_secret"] == "present"
+    assert payload["stored_token"] == "missing"
+    assert "client-secret" not in str(payload)

@@ -16,7 +16,7 @@ from apex_mcp_server.storage import UserStore
 LOCAL_TIME_ZONE = ZoneInfo("Europe/Madrid")
 STRAVA_API_BASE_URL = "https://www.strava.com/api/v3"
 STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
-STRAVA_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8000/auth/strava/callback"
+STRAVA_DEFAULT_REDIRECT_URI = "http://localhost:8000/auth/strava/callback"
 STRAVA_SOURCE = "strava"
 STRAVA_TOKEN_URL = "https://www.strava.com/api/v3/oauth/token"
 
@@ -27,6 +27,8 @@ class StravaAPIError(RuntimeError):
     Parameters:
         message: Safe error message that does not include token values.
         status_code: HTTP status code returned by Strava.
+        response_payload: Optional safe response payload used by tests or
+            callers for diagnostics.
 
     Returns:
         StravaAPIError: Exception carrying the Strava HTTP status code.
@@ -35,12 +37,18 @@ class StravaAPIError(RuntimeError):
         This initializer does not raise errors directly.
     """
 
-    def __init__(self, message: str, status_code: int) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int,
+        response_payload: object | None = None,
+    ) -> None:
         """Store the safe error message and Strava HTTP status code.
 
         Parameters:
             message: Safe error message that does not include token values.
             status_code: HTTP status code returned by Strava.
+            response_payload: Optional safe response payload.
 
         Returns:
             None.
@@ -48,6 +56,7 @@ class StravaAPIError(RuntimeError):
 
         super().__init__(message)
         self.status_code = status_code
+        self.response_payload = response_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +266,52 @@ def resolve_strava_redirect_uri(settings: Settings) -> str:
         return f"{public_base_url.rstrip('/')}/auth/strava/callback"
 
     return STRAVA_DEFAULT_REDIRECT_URI
+
+
+async def strava_connection_status(
+    settings: Settings,
+    store: UserStore,
+    subject: str = "anonymous",
+) -> dict[str, object]:
+    """Return a safe Strava configuration and token-storage status report.
+
+    Parameters:
+        settings: Runtime settings containing optional Strava config.
+        store: User storage backend used to check for a saved token bundle.
+        subject: Fallback MCP caller subject when `STRAVA_TOKEN_SUBJECT=caller`.
+
+    Returns:
+        dict[str, object]: Safe diagnostic status without token values.
+
+    Raises:
+        Exception: Propagated from the storage backend when token lookup fails.
+
+    Example:
+        >>> # await strava_connection_status(settings, store)
+    """
+
+    token_subject = _resolve_strava_token_subject(settings, subject)
+    stored_token = await store.get_external_service_token(token_subject, STRAVA_SOURCE)
+    stored_expires_at = (
+        _int_value(stored_token.get("expires_at")) if stored_token else None
+    )
+
+    return {
+        "service": STRAVA_SOURCE,
+        "client_id": _configuration_status(settings.strava_client_id),
+        "client_secret": _configuration_status(settings.strava_client_secret),
+        "env_refresh_token": _configuration_status(settings.strava_refresh_token),
+        "stored_token": "present" if stored_token else "missing",
+        "stored_token_expires_at": stored_expires_at,
+        "redirect_uri": resolve_strava_redirect_uri(settings),
+        "scopes": settings.strava_scopes,
+        "activity_scope": (
+            "present"
+            if _scope_allows_activity_read(settings.strava_scopes)
+            else "missing"
+        ),
+        "token_subject": token_subject,
+    }
 
 
 async def connect_strava_account(
@@ -533,11 +588,13 @@ def _require_strava_credentials(settings: Settings) -> StravaCredentials:
             "STRAVA_CLIENT_ID": settings.strava_client_id,
             "STRAVA_CLIENT_SECRET": settings.strava_client_secret,
         }.items()
-        if value is None
+        if not _is_configured_secret(value)
     ]
     if missing:
         raise SettingsError(
-            "Strava sync requires STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET."
+            "Strava is not configured. Set STRAVA_CLIENT_ID and "
+            "STRAVA_CLIENT_SECRET, then open /auth/strava/start to authorize "
+            "activity access before calling sync_external_service."
         )
 
     return StravaCredentials(
@@ -597,8 +654,9 @@ async def _get_valid_strava_access_token(
     )
     if not refresh_candidates:
         raise SettingsError(
-            "Strava sync requires STRAVA_REFRESH_TOKEN until the first "
-            "successful token refresh is stored in Postgres."
+            "Strava is not connected. Open /auth/strava/start to authorize "
+            "the Strava account, or provide STRAVA_REFRESH_TOKEN as a "
+            "temporary recovery seed, before calling sync_external_service."
         )
 
     last_error: StravaAPIError | None = None
@@ -941,10 +999,77 @@ def _raise_for_strava_status(response: httpx.Response, operation: str) -> None:
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
+        payload = _safe_error_payload(response)
         raise StravaAPIError(
-            f"Strava {operation} failed with HTTP {response.status_code}.",
+            _strava_error_message(response, operation, payload),
             response.status_code,
+            response_payload=payload,
         ) from exc
+
+
+def _safe_error_payload(response: httpx.Response) -> object | None:
+    """Return a safe Strava error payload for diagnostic messages.
+
+    Parameters:
+        response: HTTP response returned by Strava.
+
+    Returns:
+        object | None: Parsed JSON payload, response text, or `None`.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:500] if text else None
+    return payload
+
+
+def _strava_error_message(
+    response: httpx.Response,
+    operation: str,
+    payload: object | None,
+) -> str:
+    """Build a safe, actionable Strava error message.
+
+    Parameters:
+        response: HTTP response returned by Strava.
+        operation: Human-readable operation name for diagnostics.
+        payload: Safe parsed response payload.
+
+    Returns:
+        str: Error text without token values.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    base = f"Strava {operation} failed with HTTP {response.status_code}."
+    payload_text = str(payload or "")
+
+    if response.status_code == 401 and "activity:read_permission" in payload_text:
+        return (
+            f"{base} The Strava token is missing activity read permission. "
+            "Reconnect Strava at /auth/strava/start and approve activity:read "
+            "or activity:read_all."
+        )
+
+    if response.status_code == 401 and operation == "token refresh":
+        return (
+            f"{base} The refresh token was rejected or expired. Reconnect "
+            "Strava at /auth/strava/start to save a fresh token."
+        )
+
+    if response.status_code == 400 and operation == "OAuth code exchange":
+        return (
+            f"{base} The authorization code may be expired or already used. "
+            "Generate a fresh URL at /auth/strava/start and approve Strava again."
+        )
+
+    return base
 
 
 def _json_dict(response: httpx.Response, operation: str) -> dict[str, Any]:
@@ -1014,6 +1139,60 @@ def _safe_token_payload(payload: dict[str, Any]) -> dict[str, object]:
     if isinstance(athlete, dict) and "id" in athlete:
         safe_payload["athlete_id"] = athlete["id"]
     return safe_payload
+
+
+def _is_placeholder_value(value: str) -> bool:
+    """Return whether an env value still looks like a sample placeholder.
+
+    Parameters:
+        value: Environment value to inspect.
+
+    Returns:
+        bool: `True` when the value starts with the sample placeholder prefix.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    return value.strip().startswith("replace-with-")
+
+
+def _is_configured_secret(value: object | None) -> bool:
+    """Return whether a secret-like config value is usable.
+
+    Parameters:
+        value: Raw config value.
+
+    Returns:
+        bool: `True` when the value is present and not a placeholder.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    text = _string_value(value)
+    return text is not None and not _is_placeholder_value(text)
+
+
+def _configuration_status(value: object | None) -> str:
+    """Describe a config value without exposing the value.
+
+    Parameters:
+        value: Raw config value.
+
+    Returns:
+        str: One of `present`, `missing`, or `placeholder`.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    text = _string_value(value)
+    if text is None:
+        return "missing"
+    if _is_placeholder_value(text):
+        return "placeholder"
+    return "present"
 
 
 def _string_value(value: object | None) -> str | None:

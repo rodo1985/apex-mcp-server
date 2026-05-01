@@ -17,6 +17,7 @@ entries.
 - One Strava API path for per-activity details
 - One browser helper route pair for Strava OAuth connection:
   `/auth/strava/start` and `/auth/strava/callback`
+- One safe Strava status helper at `/auth/strava/status`
 - One storage upsert path into `activity_entries`
 - One small token table for the latest Strava OAuth token bundle
 
@@ -73,6 +74,10 @@ manual recovery seed. The preferred setup is to open `/auth/strava/start`,
 grant activity access in Strava, and let `/auth/strava/callback` save the
 refresh token in Postgres.
 
+The simple Strava script uses `STRAVA_SCOPE`; this server accepts that alias
+when `STRAVA_SCOPES` is not set. Copy the sample script's `STRAVA_SCOPE` value
+to `STRAVA_SCOPES` for clarity when moving values into this repo.
+
 This Strava OAuth step is separate from the OAuth connection between the AI
 agent and this MCP server. The agent's MCP OAuth token proves it can call the
 server; Strava OAuth proves the server can read your Strava activities.
@@ -81,12 +86,20 @@ Use the Strava scope `activity:read`. Use `activity:read_all` if private
 "Only Me" activities should sync. The default `STRAVA_SCOPES` value is
 `read,activity:read_all`.
 
+Use `/auth/strava/status` for a safe diagnostic check. It reports whether
+client credentials, an env refresh-token seed, a stored token, and activity
+scope are present without returning token values.
+
 Strava may return a rotated refresh token during token refresh. The tool saves
 that latest token in Postgres and uses it on later syncs. If a stored token is
 rejected with `401`, the tool retries once with the env `STRAVA_REFRESH_TOKEN`
 seed and saves the replacement when that succeeds. This keeps normal Strava
 rotation out of the operator workflow while still allowing manual recovery by
 regenerating and redeploying the env seed.
+
+If Strava returns a `401` with `activity:read_permission`, the token was
+authorized without activity access. Reconnect through `/auth/strava/start` and
+approve `activity:read` or `activity:read_all`.
 
 ## Data Flow
 
@@ -96,6 +109,8 @@ flowchart LR
     OAuthStart --> StravaConsent["Strava consent"]
     StravaConsent --> OAuthCallback["/auth/strava/callback"]
     OAuthCallback --> TokenStore["Postgres token store"]
+    Browser --> Status["/auth/strava/status"]
+    Status --> TokenStore
     Agent["AI agent"] --> Tool["sync_external_service"]
     Tool --> Dispatcher["Service dispatcher"]
     Dispatcher --> TokenStore

@@ -180,6 +180,9 @@ Important notes:
 - Strava variables are needed only for `sync_external_service(service="strava", ...)`
 - `STRAVA_REFRESH_TOKEN` is a recovery seed; the preferred Strava setup is
   opening `/auth/strava/start` and letting the callback save the token
+- `STRAVA_SCOPE` from the simple script maps to `STRAVA_SCOPES` here; prefer
+  `STRAVA_SCOPES=read,activity:read_all` in Vercel
+- `/auth/strava/status` reports safe setup status without token values
 
 ## 6. Make the Claude-facing endpoint public
 

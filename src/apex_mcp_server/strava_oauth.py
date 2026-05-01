@@ -12,6 +12,7 @@ from apex_mcp_server.external_services import (
     StravaAPIError,
     build_strava_authorization_url,
     connect_strava_account,
+    strava_connection_status,
 )
 from apex_mcp_server.storage import UserStore
 
@@ -55,6 +56,14 @@ def mount_strava_oauth_routes(
             Route(
                 "/auth/strava/callback",
                 _build_callback_endpoint(settings, store),
+                methods=["GET"],
+            )
+        )
+    if "/auth/strava/status" not in existing_paths:
+        routes.append(
+            Route(
+                "/auth/strava/status",
+                _build_status_endpoint(settings, store),
                 methods=["GET"],
             )
         )
@@ -154,3 +163,43 @@ def _build_callback_endpoint(settings: Settings, store: UserStore):
         return JSONResponse(summary)
 
     return strava_auth_callback
+
+
+def _build_status_endpoint(settings: Settings, store: UserStore):
+    """Build the `/auth/strava/status` endpoint closure.
+
+    Parameters:
+        settings: Runtime settings used to inspect Strava configuration.
+        store: Shared user store where token bundles are checked.
+
+    Returns:
+        Callable: Starlette endpoint that returns safe Strava status.
+
+    Raises:
+        This helper does not raise errors directly.
+    """
+
+    async def strava_auth_status(request: Request) -> Response:
+        """Return safe Strava configuration and token status.
+
+        Parameters:
+            request: Incoming Starlette request.
+
+        Returns:
+            Response: JSON status payload with no token values.
+
+        Raises:
+            This endpoint converts expected errors into HTTP responses.
+        """
+
+        try:
+            summary = await strava_connection_status(
+                settings=settings,
+                store=store,
+            )
+        except Exception as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=500)
+
+        return JSONResponse(summary)
+
+    return strava_auth_status

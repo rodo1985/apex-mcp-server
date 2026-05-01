@@ -15,11 +15,13 @@ from apex_mcp_server.external_services import (
     STRAVA_API_BASE_URL,
     STRAVA_AUTHORIZE_URL,
     STRAVA_TOKEN_URL,
+    StravaAPIError,
     build_strava_authorization_url,
     connect_strava_account,
     map_strava_activity_to_storage,
     resolve_strava_redirect_uri,
     resolve_sync_day,
+    strava_connection_status,
     sync_external_service,
 )
 
@@ -204,7 +206,7 @@ def test_strava_authorization_url_requests_activity_scope() -> None:
 
     assert str(parsed.copy_with(query=None)) == STRAVA_AUTHORIZE_URL
     assert query["client_id"] == ["client-id"]
-    assert query["redirect_uri"] == ["http://127.0.0.1:8000/auth/strava/callback"]
+    assert query["redirect_uri"] == ["http://localhost:8000/auth/strava/callback"]
     assert query["approval_prompt"] == ["force"]
     assert query["scope"] == ["read,activity:read_all"]
     assert query["state"] == ["connect-test"]
@@ -393,7 +395,7 @@ async def test_sync_external_service_reports_missing_strava_config() -> None:
         database_url="postgresql://demo:demo@localhost:5432/demo",
     )
 
-    with pytest.raises(SettingsError, match="Strava sync requires"):
+    with pytest.raises(SettingsError, match="Strava is not configured"):
         await sync_external_service(
             settings=settings,
             store=FakeExternalActivityStore(),  # type: ignore[arg-type]
@@ -401,6 +403,135 @@ async def test_sync_external_service_reports_missing_strava_config() -> None:
             service="strava",
             day="2026-04-29",
         )
+
+
+@pytest.mark.asyncio
+async def test_sync_external_service_reports_missing_strava_connection() -> None:
+    """Ensure missing token state tells the operator to connect Strava.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    settings = Settings(
+        app_name="APEX FastMCP Profile Pilot",
+        version="0.1.0",
+        auth_mode="none",
+        api_token=None,
+        public_base_url=None,
+        workos_authkit_domain=None,
+        database_url="postgresql://demo:demo@localhost:5432/demo",
+        strava_client_id="client-id",
+        strava_client_secret="client-secret",
+    )
+
+    with pytest.raises(SettingsError, match="/auth/strava/start"):
+        await sync_external_service(
+            settings=settings,
+            store=FakeExternalActivityStore(),  # type: ignore[arg-type]
+            subject="subject-1",
+            service="strava",
+            day="2026-04-29",
+        )
+
+
+@pytest.mark.asyncio
+async def test_strava_sync_reports_missing_activity_scope() -> None:
+    """Ensure Strava activity-scope 401 responses are actionable.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Return a valid token and an activity-scope failure.
+
+        Parameters:
+            request: Outgoing HTTP request made by the sync helper.
+
+        Returns:
+            httpx.Response: Mocked Strava API response.
+        """
+
+        if str(request.url) == STRAVA_TOKEN_URL:
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "expires_at": 4_102_444_800,
+                },
+            )
+
+        if request.url.path == "/api/v3/athlete/activities":
+            return httpx.Response(
+                401,
+                json={
+                    "message": "Authorization Error",
+                    "errors": [
+                        {
+                            "resource": "AccessToken",
+                            "field": "activity:read_permission",
+                            "code": "missing",
+                        }
+                    ],
+                },
+            )
+
+        return httpx.Response(404, json={"message": "unexpected request"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(StravaAPIError, match="Reconnect Strava"):
+            await sync_external_service(
+                settings=strava_settings(),
+                store=FakeExternalActivityStore(),  # type: ignore[arg-type]
+                subject="subject-1",
+                service="strava",
+                day="2026-04-29",
+                http_client=client,
+            )
+
+
+@pytest.mark.asyncio
+async def test_strava_connection_status_is_safe_and_actionable() -> None:
+    """Ensure the diagnostic status reports presence without leaking values.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+    """
+
+    store = FakeExternalActivityStore()
+    await store.save_external_service_token(
+        subject="strava-singleton",
+        service="strava",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800,
+        raw_payload={},
+    )
+
+    status = await strava_connection_status(
+        settings=strava_settings(),
+        store=store,  # type: ignore[arg-type]
+    )
+
+    assert status["client_id"] == "present"
+    assert status["client_secret"] == "present"
+    assert status["env_refresh_token"] == "present"
+    assert status["stored_token"] == "present"
+    assert status["activity_scope"] == "present"
+    assert "access-token" not in str(status)
+    assert "refresh-token" not in str(status)
 
 
 def test_map_strava_activity_to_storage_captures_expected_fields() -> None:

@@ -200,6 +200,28 @@ def test_settings_load_optional_strava_credentials(monkeypatch) -> None:
     assert settings.strava_token_subject == "strava-token-owner"
 
 
+def test_settings_accept_sample_strava_scope_alias(monkeypatch) -> None:
+    """Ensure the sample script's STRAVA_SCOPE name maps to MCP scopes.
+
+    Parameters:
+        monkeypatch: Pytest fixture for temporary environment overrides.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If the compatibility env var is ignored.
+    """
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
+    monkeypatch.delenv("STRAVA_SCOPES", raising=False)
+    monkeypatch.setenv("STRAVA_SCOPE", "read,activity:read")
+
+    settings = Settings.from_env()
+
+    assert settings.strava_scopes == "read,activity:read"
+
+
 def test_settings_do_not_require_strava_credentials(monkeypatch) -> None:
     """Ensure the server can start without Strava sync credentials.
 
@@ -219,6 +241,7 @@ def test_settings_do_not_require_strava_credentials(monkeypatch) -> None:
     monkeypatch.delenv("STRAVA_REFRESH_TOKEN", raising=False)
     monkeypatch.delenv("STRAVA_REDIRECT_URI", raising=False)
     monkeypatch.delenv("STRAVA_SCOPES", raising=False)
+    monkeypatch.delenv("STRAVA_SCOPE", raising=False)
     monkeypatch.delenv("STRAVA_TOKEN_SUBJECT", raising=False)
 
     settings = Settings.from_env()

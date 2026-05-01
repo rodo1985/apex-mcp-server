@@ -201,6 +201,8 @@ The Strava variables are optional at server startup. `STRAVA_CLIENT_ID` and
 `sync_external_service(service="strava", ...)`. `STRAVA_REFRESH_TOKEN` is only
 a recovery seed; the easiest path is to open `/auth/strava/start`, approve
 activity access in Strava, and let the callback save the right token.
+`STRAVA_SCOPE` is also accepted as an alias for `STRAVA_SCOPES` so values from
+the simple Strava script can be copied across directly.
 
 ### Vercel production setup
 
@@ -282,6 +284,33 @@ separate from the OAuth connection between your AI agent and this MCP server.
 activities can sync. The callback saves the latest refresh token in Postgres
 under `STRAVA_TOKEN_SUBJECT` so normal token rotation does not require editing
 Vercel env vars.
+
+### Set Up Strava Activity Sync
+
+Strava app credentials are not enough by themselves. They identify the app, but
+the activity API still needs an athlete OAuth token. The AI agent's OAuth login
+to this MCP server does not authorize Strava.
+
+1. In the Strava app settings, set the authorization callback domain to the
+   domain you use for this MCP server. For local development with the default
+   callback, use `localhost` or the exact host configured in
+   `STRAVA_REDIRECT_URI`.
+2. Put `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET` in `.env`.
+3. Set `STRAVA_SCOPES=read,activity:read_all`. `read,activity:read` also works
+   for non-private activities.
+4. Start the server and open `/auth/strava/start`.
+5. Approve Strava access. The callback saves the refresh token in Postgres.
+6. Check safe status at `/auth/strava/status`.
+7. Ask the agent to call `sync_external_service(service="strava", day="today")`.
+
+If the sample script already has working values, copy
+`STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, and `STRAVA_REFRESH_TOKEN` from its
+`.env` into this repo's `.env`. Copy sample `STRAVA_SCOPE` into this repo as
+`STRAVA_SCOPES`, or leave it named `STRAVA_SCOPE`; both are supported.
+
+If sync returns a `401` mentioning `activity:read_permission`, reconnect with
+`/auth/strava/start` and approve `activity:read` or `activity:read_all`. A token
+with only `read` can fetch profile data but cannot read activities.
 
 ## Recommended Workflow
 

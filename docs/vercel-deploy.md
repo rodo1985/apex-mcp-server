@@ -147,7 +147,8 @@ STRAVA_TOKEN_SUBJECT=strava-singleton
 The Strava variables are needed only if the deployed MCP agent should call
 `sync_external_service(service="strava", ...)`. `STRAVA_REFRESH_TOKEN` is only
 a recovery seed when `/auth/strava/start` has not connected the Strava account
-yet.
+yet. `STRAVA_SCOPE` is accepted as an alias for `STRAVA_SCOPES` when copying
+values from the simple Strava script, but prefer `STRAVA_SCOPES` in this repo.
 
 ## Where to store secrets
 
@@ -189,6 +190,8 @@ vercel env add STRAVA_REFRESH_TOKEN production
 
 `STRAVA_SCOPES` and `STRAVA_TOKEN_SUBJECT` have useful defaults. Set them only
 if you need to override `read,activity:read_all` or the singleton token subject.
+After deployment, open `/auth/strava/start` once to save a production token in
+Postgres, then check `/auth/strava/status`.
 
 3. Deploy to production:
 

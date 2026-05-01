@@ -48,7 +48,8 @@ class Settings:
         strava_redirect_uri: Optional OAuth callback URI used by the Strava
             browser connection helper.
         strava_scopes: OAuth scopes requested by the Strava browser connection
-            helper.
+            helper. `STRAVA_SCOPES` is preferred, while `STRAVA_SCOPE` is
+            accepted for compatibility with the simple Strava script.
         strava_token_subject: Storage subject used for the Strava OAuth token
             row. The default keeps Strava as one singleton connection for this
             private pilot.
@@ -122,6 +123,7 @@ class Settings:
             ),
             strava_scopes=(
                 _clean_optional_value(os.environ.get("STRAVA_SCOPES"))
+                or _clean_optional_value(os.environ.get("STRAVA_SCOPE"))
                 or "read,activity:read_all"
             ),
             strava_token_subject=(
